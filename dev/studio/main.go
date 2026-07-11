@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -224,6 +225,35 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 		}
 	}
 
+	// Read single-image first / last frame anchors (video only). Each is
+	// independent of `ref`; the front-end disables them for image mode, but
+	// we re-check server-side and silently ignore them for image generation.
+	var frameFirst, frameLast *refImage
+	if fhs := r.MultipartForm.File["frame_first"]; len(fhs) > 0 {
+		if len(fhs) > 1 {
+			http.Error(w, "frame_first must be a single image (max 1)", http.StatusBadRequest)
+			return
+		}
+		img, err := readRefImage(fhs[0])
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid frame_first image %q: %v", fhs[0].Filename, err), http.StatusBadRequest)
+			return
+		}
+		frameFirst = &img
+	}
+	if fhs := r.MultipartForm.File["frame_last"]; len(fhs) > 0 {
+		if len(fhs) > 1 {
+			http.Error(w, "frame_last must be a single image (max 1)", http.StatusBadRequest)
+			return
+		}
+		img, err := readRefImage(fhs[0])
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid frame_last image %q: %v", fhs[0].Filename, err), http.StatusBadRequest)
+			return
+		}
+		frameLast = &img
+	}
+
 	// Validate type
 	switch genType {
 	case "image", "video":
@@ -238,6 +268,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 
 	switch genType {
 	case "image":
+		// frame_first / frame_last are video-only; ignore them here.
 		result, err := generateImage(ctx, client, modelID, prompt, refImages, params)
 		if err != nil {
 			http.Error(w, "image generation failed: "+err.Error(), http.StatusBadGateway)
@@ -254,7 +285,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 			"url":  "/api/output/" + fileName,
 		})
 	case "video":
-		result, err := generateVideo(ctx, client, modelID, prompt, refImages, params)
+		result, err := generateVideo(ctx, client, modelID, prompt, refImages, frameFirst, frameLast, params)
 		if err != nil {
 			http.Error(w, "video generation failed: "+err.Error(), http.StatusBadGateway)
 			return
@@ -321,8 +352,12 @@ type genParams struct {
 	Seed              int
 
 	// Video
-	Duration      int // seconds
+	Duration      int // seconds (server defaults to 5, clamped to 1..10)
 	GenerateAudio bool
+	// Size is the exact WIDTHxHEIGHT string (e.g. "1280x720"). When non-empty
+	// it is mutually exclusive with AspectRatio + Resolution — the server
+	// returns HTTP 400 if both are set.
+	Size string
 }
 
 // readGenParams pulls every optional field off the multipart form. Missing or
@@ -339,9 +374,48 @@ func readGenParams(r *http.Request) genParams {
 		Seed:              atoiOrZero(r.FormValue("seed")),
 		Duration:          atoiOrZero(r.FormValue("duration")),
 		GenerateAudio:     r.FormValue("generate_audio") == "on" || r.FormValue("generate_audio") == "true",
+		Size:              strings.TrimSpace(r.FormValue("size")),
 	}
 	return p
 }
+
+// videoPolicy applies studio defaults / caps for video fields. It returns
+// the resolved values plus an HTTP 400 message if validation fails.
+//
+//	Duration : blank → 5 seconds, clamped to 1..10
+//	Resolution: blank → "720p"
+//
+// Size (WIDTHxHEIGHT) is mutually exclusive with AspectRatio + Resolution —
+// callers must validate that before invoking.
+func (p *genParams) applyVideoPolicy() (resolved genParams, errMsg string) {
+	resolved = *p
+	// Duration: default 5, clamp 1..10.
+	if resolved.Duration == 0 {
+		resolved.Duration = 5
+	}
+	if resolved.Duration < 1 || resolved.Duration > 10 {
+		return genParams{}, fmt.Sprintf("duration must be between 1 and 10 seconds (got %d)", resolved.Duration)
+	}
+	// Resolution default.
+	if strings.TrimSpace(resolved.Resolution) == "" {
+		resolved.Resolution = "720p"
+	}
+	// Size format check (if provided).
+	if resolved.Size != "" {
+		if !sizePattern.MatchString(resolved.Size) {
+			return genParams{}, fmt.Sprintf("size must be in WIDTHxHEIGHT format, e.g. 1280x720 (got %q)", resolved.Size)
+		}
+	}
+	// Mutual exclusion: size vs (aspect_ratio + resolution).
+	if resolved.Size != "" && (resolved.AspectRatio != "" || strings.TrimSpace(p.Resolution) != "") {
+		return genParams{}, "size is mutually exclusive with aspect_ratio and resolution — set either size OR aspect_ratio (+ optional resolution), not both"
+	}
+	return resolved, ""
+}
+
+// sizePattern validates a WxH size string (e.g. "1280x720", "1920x1080").
+// Width/height are 2-5 digits each, in the typical video range.
+var sizePattern = regexp.MustCompile(`^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$`)
 
 func atoiOrZero(s string) int {
 	s = strings.TrimSpace(s)
@@ -449,37 +523,66 @@ func generateImage(ctx context.Context, client *openrouter.OpenRouter, modelID, 
 	return genResult{ext: ext, data: bytes}, nil
 }
 
-func generateVideo(ctx context.Context, client *openrouter.OpenRouter, modelID, prompt string, refs []refImage, p genParams) (genResult, error) {
+func generateVideo(ctx context.Context, client *openrouter.OpenRouter, modelID, prompt string, refs []refImage, firstFrame, lastFrame *refImage, p genParams) (genResult, error) {
+	// Apply studio defaults & validation BEFORE talking to the SDK.
+	resolved, errMsg := p.applyVideoPolicy()
+	if errMsg != "" {
+		return genResult{}, fmt.Errorf("%s", errMsg)
+	}
+	p = resolved
+
 	req := components.VideoGenerationRequest{
 		Model:  modelID,
 		Prompt: prompt,
 	}
-	if len(refs) > 0 {
-		// image-to-video: forward every uploaded reference as a frame anchor.
-		// We mark the first uploaded ref as the first_frame and, if there are
-		// at least two, the last one as the last_frame. The cap is enforced
-		// in handleGenerate.
-		req.FrameImages = make([]components.FrameImage, 0, len(refs))
-		for i, ref := range refs {
-			ft := components.FrameTypeFirstFrame
-			if i == len(refs)-1 && len(refs) >= 2 {
-				ft = components.FrameTypeLastFrame
-			}
+
+	// Frame anchors come from the DEDICATED first/last frame inputs. They
+	// are independent of the multi-image `ref` field — the form's first
+	// and last slots are entirely separate from the reference list.
+	if firstFrame != nil || lastFrame != nil {
+		req.FrameImages = make([]components.FrameImage, 0, 2)
+		if firstFrame != nil {
 			req.FrameImages = append(req.FrameImages, components.FrameImage{
 				Type:      components.FrameImageTypeImageURL,
-				ImageURL:  components.FrameImageImageURL{URL: ref.dataURL()},
-				FrameType: ft,
+				ImageURL:  components.FrameImageImageURL{URL: firstFrame.dataURL()},
+				FrameType: components.FrameTypeFirstFrame,
 			})
+		}
+		if lastFrame != nil {
+			req.FrameImages = append(req.FrameImages, components.FrameImage{
+				Type:      components.FrameImageTypeImageURL,
+				ImageURL:  components.FrameImageImageURL{URL: lastFrame.dataURL()},
+				FrameType: components.FrameTypeLastFrame,
+			})
+		}
+	}
+
+	// Reference images (up to 16) go to InputReferences using the union helper.
+	// They are visual guides, NOT frame anchors.
+	if len(refs) > 0 {
+		req.InputReferences = make([]components.InputReference, 0, len(refs))
+		for _, ref := range refs {
+			img := components.ContentPartImage{
+				ImageURL: components.ContentPartImageImageURL{URL: ref.dataURL()},
+			}
+			req.InputReferences = append(req.InputReferences,
+				components.CreateInputReferenceImageURL(img))
 		}
 	}
 
 	// Optional params. Each helper returns nil for "blank", which the SDK
 	// omits from the request body via `omitzero`.
-	if v := p.AspectRatio; v != "" {
-		req.AspectRatio = (*components.VideoGenerationRequestAspectRatio)(&v)
-	}
-	if v := p.Resolution; v != "" {
-		req.Resolution = (*components.VideoGenerationRequestResolution)(&v)
+	// Note: Size is mutually exclusive with AspectRatio + Resolution (validated
+	// in applyVideoPolicy), so at most one of these is non-empty here.
+	if p.Size != "" {
+		req.Size = &p.Size
+	} else {
+		if v := p.AspectRatio; v != "" {
+			req.AspectRatio = (*components.VideoGenerationRequestAspectRatio)(&v)
+		}
+		if v := p.Resolution; v != "" {
+			req.Resolution = (*components.VideoGenerationRequestResolution)(&v)
+		}
 	}
 	req.Duration = int64Ptr(p.Duration)
 	req.GenerateAudio = boolPtr(p.GenerateAudio)

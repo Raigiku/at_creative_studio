@@ -249,6 +249,7 @@
     line-height: 1.1;
     pointer-events: none;
   }
+  .ref-thumb .badge--ref { background: rgba(108, 99, 255, 0.75); }
   .ref-thumb .remove {
     position: absolute;
     top: 4px;
@@ -309,6 +310,62 @@
   }
   /* When both a badge and a name are present, stack them: name on top of badge. */
   .ref-thumb .badge + .name { bottom: 24px; }
+
+  /* ---------- Single-image frame preview (first/last frame anchors) ---------- */
+  .frame-preview {
+    position: relative;
+    margin-top: 8px;
+    width: 100%;
+    max-width: 200px;
+    aspect-ratio: 16 / 9;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface-2);
+    box-shadow: 0 0 0 0.5px var(--separator-strong);
+  }
+  .frame-preview:not([hidden]) { display: block; }
+  .frame-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .frame-preview .remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .frame-preview .remove:hover { background: var(--red); }
+  .frame-preview .label {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
 
   /* ---------- Aspect ratio pills ---------- */
   .ratios {
@@ -451,6 +508,10 @@
   .generate-btn {
     margin-top: 22px;
     width: 100%;
+    max-width: 360px;   /* cap so it doesn't stretch across the whole 780px card */
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
     padding: 13px 20px;
     background: var(--accent);
     color: #fff;
@@ -580,12 +641,27 @@
       <select id="model" name="model" required></select>
     </div>
 
-    <!-- ===== Output options (always visible) ===== -->
-    <div class="section">
-      <span class="section-label">⚙️ Output options</span>
+    <!-- ===== Output size mode picker (video only) ===== -->
+    <div class="section" data-show="video">
+      <span class="section-label">🔀 Output size mode</span>
+      <div class="grid">
+        <div class="field field-full">
+          <div class="segmented segmented-2" role="radiogroup" aria-label="Video output size mode">
+            <input type="radio" name="size_mode" id="size_mode-aspect" value="aspect" checked />
+            <label for="size_mode-aspect">📐 Aspect + Res</label>
+            <input type="radio" name="size_mode" id="size_mode-size" value="size" />
+            <label for="size_mode-size">📏 Size</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Aspect ratio (always visible, but hidden in video+size mode) ===== -->
+    <div class="section" data-mode-section="aspect">
+      <span class="section-label">📐 Aspect ratio</span>
 
       <div class="grid">
-        <!-- Aspect ratio spans the full width -->
+        <!-- Aspect ratio pills + More... dropdown -->
         <div class="field field-full">
           <div class="ratios" id="ratios">
             <span class="pill" data-value="1:1">1:1</span>
@@ -603,8 +679,26 @@
           <input type="hidden" id="aspect_ratio" name="aspect_ratio" value="1:1" />
         </div>
 
-        <!-- Image-only output options -->
-        <div class="field" data-show="image">
+        <!-- Video-only resolution (lives under Aspect ratio, only shown for video) -->
+        <div class="field" data-show="video">
+          <label class="section-label" for="resolution_vid">📐 Resolution</label>
+          <select id="resolution_vid" name="resolution" data-res-kind="video">
+            <option value="480p">480p</option>
+            <option value="720p" selected>720p</option>
+            <option value="1080p">1080p</option>
+            <option value="1K">1K</option>
+            <option value="2K">2K</option>
+            <option value="4K">4K</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Image output options (image only) ===== -->
+    <div class="section" data-show="image">
+      <span class="section-label">🖼️ Image options</span>
+      <div class="grid">
+        <div class="field">
           <label class="section-label" for="output_format">📄 Format</label>
           <select id="output_format" name="output_format">
             <option value="png" selected>PNG</option>
@@ -613,7 +707,7 @@
             <option value="svg">SVG</option>
           </select>
         </div>
-        <div class="field" data-show="image">
+        <div class="field">
           <label class="section-label" for="quality">✨ Quality</label>
           <select id="quality" name="quality">
             <option value="auto" selected>Auto</option>
@@ -622,7 +716,7 @@
             <option value="high">High</option>
           </select>
         </div>
-        <div class="field" data-show="image">
+        <div class="field">
           <label class="section-label" for="background">🎨 Background</label>
           <select id="background" name="background">
             <option value="auto" selected>Auto</option>
@@ -630,7 +724,7 @@
             <option value="opaque">Opaque</option>
           </select>
         </div>
-        <div class="field" data-show="image">
+        <div class="field">
           <label class="section-label" for="resolution_img">📐 Resolution</label>
           <select id="resolution_img" name="resolution" data-res-kind="image">
             <option value="512" selected>512</option>
@@ -639,30 +733,47 @@
             <option value="4K">4K</option>
           </select>
         </div>
-        <div class="field" data-show="image">
+        <div class="field">
           <label class="section-label" for="n">🔢 Number of images <span class="help">(1–10)</span></label>
           <input type="number" class="input" id="n" name="n" min="1" max="10" step="1" value="1" />
         </div>
-        <div class="field" data-show="image">
+        <div class="field">
           <label class="section-label" for="output_compression">🗜️ Compression <span class="help">(0–100, JPEG/WebP)</span></label>
           <input type="number" class="input" id="output_compression" name="output_compression" min="0" max="100" step="1" value="100" />
         </div>
+      </div>
+    </div>
 
-        <!-- Video-only output options -->
-        <div class="field" data-show="video">
-          <label class="section-label" for="resolution_vid">📐 Resolution</label>
-          <select id="resolution_vid" name="resolution" data-res-kind="video">
-            <option value="">Provider default</option>
-            <option value="480p">480p</option>
-            <option value="720p">720p</option>
-            <option value="1080p">1080p</option>
-            <option value="1K">1K</option>
-            <option value="2K">2K</option>
-            <option value="4K">4K</option>
-          </select>
+    <!-- ===== Video output options (video only) ===== -->
+    <div class="section" data-show="video">
+      <span class="section-label">🎬 Video options</span>
+      <div class="grid">
+        <!-- First / Last frame anchors (video-only, single image each) -->
+        <div class="field">
+          <label class="section-label" for="frame_first">🎞️ First frame <span class="help">(optional, single image)</span></label>
+          <input type="file" id="frame_first" name="frame_first" accept="image/*" />
+          <div id="frame_first_preview" class="frame-preview" hidden></div>
         </div>
-        <div class="field" data-show="video" style="display:flex;align-items:flex-end;">
-          <label class="check" for="generate_audio" style="width:100%;">
+        <div class="field">
+          <label class="section-label" for="frame_last">🎞️ Last frame <span class="help">(optional, single image)</span></label>
+          <input type="file" id="frame_last" name="frame_last" accept="image/*" />
+          <div id="frame_last_preview" class="frame-preview" hidden></div>
+        </div>
+
+        <!-- Size W×H (only visible when "Size" mode is selected) -->
+        <div class="field field-full" data-mode-section="size" hidden>
+          <label class="section-label" for="size_vid">📏 Size <span class="help">(W×H, e.g. 1280×720)</span></label>
+          <input type="text" class="input" id="size_vid" name="size" pattern="^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$" value="1280x720" placeholder="1280x720" />
+        </div>
+
+        <!-- Duration: prominent (not in Advanced) -->
+        <div class="field">
+          <label class="section-label" for="duration">⏱️ Duration <span class="help">(seconds, 1–10)</span></label>
+          <input type="number" class="input" id="duration" name="duration" min="1" max="10" step="1" value="5" />
+        </div>
+
+        <div class="field">
+          <label class="check" for="generate_audio">
             <input type="checkbox" id="generate_audio" name="generate_audio" />
             🔊 Generate audio
           </label>
@@ -675,10 +786,6 @@
       <summary>🔧 Advanced</summary>
       <div class="advanced-body">
         <div class="grid">
-          <div class="field" data-show="video">
-            <label class="section-label" for="duration">⏱️ Duration <span class="help">(seconds)</span></label>
-            <input type="number" class="input" id="duration" name="duration" min="1" step="1" placeholder="Provider default" />
-          </div>
           <div class="field">
             <label class="section-label" for="seed">🌱 Seed <span class="help">(empty = random)</span></label>
             <input type="number" class="input" id="seed" name="seed" step="1" placeholder="Random" />
