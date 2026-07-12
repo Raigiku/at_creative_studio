@@ -55,6 +55,9 @@
       // the original error.
     }
   }
+  // Expose for cross-module use (e.g. the render loop in state.js
+  // surfaces render-failed errors through the same channel).
+  window.__showScriptError = showError
   window.addEventListener('error', (e) => {
     if (e && e.error && e.error.message) {
       showError(e.error.message)

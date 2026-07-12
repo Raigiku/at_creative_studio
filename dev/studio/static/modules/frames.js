@@ -1,30 +1,29 @@
 // modules/frames.js
 //
-// First/last frame anchor previews (video only). Each frame input
-// has a sibling `.frame-preview` div that we populate with an image
-// + a selectable filename strip + a remove button. Object URLs are
-// tracked so we can revoke them when the file changes (no leaks).
-//
-// Public API:
-//
-//   initFrames() — wire up the change listeners for both frame inputs.
-//
-// No state crosses module boundaries; this module is purely presentational.
+// First/last frame anchor inputs (video only). State-driven: the
+// input's change handler updates state.frameFirstFile / frameLastFile,
+// and render() rebuilds the preview thumbnails.
 
-const frameFirstInput = document.getElementById('frame_first')
-const frameLastInput  = document.getElementById('frame_last')
-const frameFirstPrev  = document.getElementById('frame_first_preview')
-const frameLastPrev   = document.getElementById('frame_last_preview')
+import { state, subscribe, setState } from './state.js'
+
+// Object URLs are tracked per-slot so we can revoke them on the next
+// render of that slot.
 const frameObjectURLs = { first: null, last: null }
 
-function renderFramePreview(inputEl, previewEl, slot /* 'first' | 'last' */) {
-  // Revoke any previous object URL for this slot.
+// renderFrames — pure read of state.frameFirstFile / frameLastFile.
+function renderFrames() {
+  renderSlot('first', state.frameFirstFile, document.getElementById('frame_first_preview'))
+  renderSlot('last', state.frameLastFile, document.getElementById('frame_last_preview'))
+}
+
+function renderSlot(slot, file, previewEl) {
+  // Revoke any previous URL for this slot.
   if (frameObjectURLs[slot]) {
     URL.revokeObjectURL(frameObjectURLs[slot])
     frameObjectURLs[slot] = null
   }
+  if (!previewEl) return
   previewEl.innerHTML = ''
-  const file = inputEl.files && inputEl.files[0]
   if (!file) {
     previewEl.hidden = true
     return
@@ -39,16 +38,12 @@ function renderFramePreview(inputEl, previewEl, slot /* 'first' | 'last' */) {
   img.alt = file.name || `Frame ${slot}`
   previewEl.appendChild(img)
 
-  // Bottom filename strip — full name, selectable so the user can
-  // copy it to the clipboard. We let it wrap to multiple lines and
-  // use a monospace font so the layout is predictable.
   const name = document.createElement('span')
   name.className = 'name'
   name.textContent = file.name || ''
   name.title = file.name || ''
   previewEl.appendChild(name)
 
-  // Remove button — clears the file input and re-renders.
   const remove = document.createElement('button')
   remove.type = 'button'
   remove.className = 'remove'
@@ -56,17 +51,26 @@ function renderFramePreview(inputEl, previewEl, slot /* 'first' | 'last' */) {
   remove.textContent = '×'
   remove.addEventListener('click', (ev) => {
     ev.preventDefault()
-    inputEl.value = '' // clear the file input
-    renderFramePreview(inputEl, previewEl, slot)
+    // Clear both the file input and the state.
+    const inputEl = document.getElementById(slot === 'first' ? 'frame_first' : 'frame_last')
+    if (inputEl) inputEl.value = ''
+    setState(slot === 'first' ? { frameFirstFile: null } : { frameLastFile: null })
   })
   previewEl.appendChild(remove)
 }
 
 export function initFrames() {
-  if (frameFirstInput && frameFirstPrev) {
-    frameFirstInput.addEventListener('change', () => renderFramePreview(frameFirstInput, frameFirstPrev, 'first'))
+  const firstInput = document.getElementById('frame_first')
+  const lastInput  = document.getElementById('frame_last')
+  if (firstInput) {
+    firstInput.addEventListener('change', () => {
+      setState({ frameFirstFile: firstInput.files && firstInput.files[0] || null })
+    })
   }
-  if (frameLastInput && frameLastPrev) {
-    frameLastInput.addEventListener('change', () => renderFramePreview(frameLastInput, frameLastPrev, 'last'))
+  if (lastInput) {
+    lastInput.addEventListener('change', () => {
+      setState({ frameLastFile: lastInput.files && lastInput.files[0] || null })
+    })
   }
+  subscribe(renderFrames)
 }

@@ -1,33 +1,25 @@
 // modules/kind.js
 //
-// The "image" vs "video" output toggle. Owns:
-//   - currentType()                     — read the active radio
-//   - refreshKindVisibility()           — show/hide [data-show] sections
-//   - refreshResolutionSelect()         — enable the right resolution select
-//   - refreshSizeOverride()             — exact-size field dims aspect+res
-//   - getSizePattern()                  — the WxH regex
-//   - the size input's 'input' listener (wired by initKind)
+// image/video output toggle + the [data-show] visibility logic that
+// hides/shows sections based on the current kind, plus the
+// resolution-pair swap and the size-override UI.
 //
-// The output type radio's 'change' listener is also installed here —
-// it calls onKindChanged(opts) so the orchestrator can re-run
-// refreshAll() and re-render the reference previews with the new
-// role badges.
-//
-// Pattern: kind.js owns a tiny bit of state (the cached aspect section
-// and resolution field wrappers) and exposes the functions that
-// other modules need. The "current kind" is read directly from the
-// form (form.type.value), so we don't keep a separate copy.
+// Public API:
+//   initKind()        — wire the type radio and size input listeners.
+//   setKind(v)        — user-facing setter; updates state + re-renders.
+//   currentType()     — read state.kind (kept for back-compat with
+//                        other modules that import this name).
+//   getSizePattern()  — the WxH regex (used by other modules).
+//   refreshKindVisibility, refreshResolutionSelect, refreshSizeOverride —
+//                        kept for back-compat; no-op shims that delegate
+//                        to the render function.
 
-import {
-  getForm,
-  getSizeInput,
-  getAspectHidden,
-} from './dom.js'
+import { getForm, getSizeInput, getAspectHidden, getAspectMore } from './dom.js'
+import { state, subscribe, setState } from './state.js'
 
 // WxH pattern for the "Exact size" field. Mirrors the server-side
 // `sizePattern` in dev/studio/params.go and the `pattern=` attribute
-// on the size input in index.html, so client-side validity, server-side
-// validation, and the live override behavior all agree.
+// on the size input in index.html.
 const sizePattern = /^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$/
 
 export function getSizePattern() {
@@ -35,15 +27,13 @@ export function getSizePattern() {
 }
 
 export function currentType() {
-  return getForm().type.value // "image" | "video"
+  return state.kind
 }
 
-// Cached wrappers used by refreshSizeOverride. Resolved on first use
-// (so we don't break if initKind runs before the form is rendered).
+// Cached wrappers for the size-override path. Resolved on first use.
 let _aspectSection = null
 let _resolutionField = null
 let _resolutionSel = null
-let _onKindChanged = () => {}
 
 function sectionOf(el) {
   const form = getForm()
@@ -73,83 +63,83 @@ function getResolutionSel() {
   return _resolutionSel
 }
 
-export function initKind({ onKindChanged } = {}) {
-  _onKindChanged = onKindChanged || _onKindChanged
-  const sizeInput = getSizeInput()
-  if (sizeInput) sizeInput.addEventListener('input', refreshSizeOverride)
+// renderKind — pure read of state.kind + state.sizeOverride.
+function renderKind() {
   const form = getForm()
-  for (const radio of form.querySelectorAll('input[name=type]')) {
-    radio.addEventListener('change', () => {
-      _onKindChanged()
-    })
-  }
-}
+  const kind = state.kind
+  const aspectHidden = getAspectHidden()
+  const aspectMore = getAspectMore()
+  const aspectSection = getAspectSection()
+  const resolutionField = getResolutionField()
+  const resolutionSel = getResolutionSel()
 
-// ---- show/hide image vs video fields ----
-export function refreshKindVisibility() {
-  const form = getForm()
-  const kind = currentType() // "image" | "video"
+  // Show/hide [data-show] sections and disable hidden fields.
   for (const el of form.querySelectorAll('[data-show]')) {
     el.style.display = el.dataset.show === kind ? '' : 'none'
   }
-  // Disable hidden fields so they don't ride along in the form submission.
   for (const el of form.querySelectorAll('[data-show]')) {
     const hidden = el.dataset.show !== kind
     for (const inner of el.querySelectorAll('input, select, textarea')) {
       inner.disabled = hidden
     }
   }
-}
 
-// Resolution has two selects (image vs video) with the same name="resolution".
-// We swap which one is enabled based on kind. The disabled one's value is
-// already blank ("") by default, so it would override the active one if not
-// for `disabled` excluding it from FormData.
-export function refreshResolutionSelect() {
-  const kind = currentType()
-  for (const sel of getForm().querySelectorAll('select[name=resolution]')) {
+  // Resolution pair swap.
+  for (const sel of form.querySelectorAll('select[name=resolution]')) {
     sel.disabled = sel.dataset.resKind !== kind
   }
-}
 
-// ---- exact-size override (video only) ----
-//
-// The video options section has an `Exact size` field (input
-// name="size", placeholder says "leave empty to use Aspect +
-// Resolution"). When the user types a valid WxH string, that value
-// overrides `aspect_ratio` and `resolution`: we disable those two
-// fields so only `size` is sent on the wire, and we add the
-// `is-overridden` class to the Aspect ratio section and to the
-// resolution field's row so the user sees that those values won't
-// take effect.
-//
-// When the field is empty, we restore everything to normal.
-export function refreshSizeOverride() {
-  // Only meaningful in video mode — in image mode the size field is
-  // hidden anyway (data-show="video" on its wrapper).
-  const sizeInput = getSizeInput()
-  const aspectHidden = getAspectHidden()
-  const aspectSection = getAspectSection()
-  const resolutionField = getResolutionField()
-  const resolutionSel = getResolutionSel()
-  const kind = currentType()
+  // Size override: when in video mode AND the user typed a valid
+  // WxH, dim aspect + resolution and disable the underlying inputs.
   if (kind !== 'video') {
     if (aspectSection) aspectSection.classList.remove('is-overridden')
     if (resolutionField) resolutionField.classList.remove('is-overridden')
     if (aspectHidden) aspectHidden.disabled = false
     if (resolutionSel) resolutionSel.disabled = resolutionSel.dataset.resKind !== kind
-    return
+  } else {
+    const active = state.sizeOverride && sizePattern.test(state.sizeOverride)
+    if (aspectSection) aspectSection.classList.toggle('is-overridden', active)
+    if (resolutionField) resolutionField.classList.toggle('is-overridden', active)
+    if (aspectHidden) aspectHidden.disabled = active
+    if (resolutionSel) resolutionSel.disabled = active || resolutionSel.dataset.resKind !== kind
   }
-  const v = sizeInput ? sizeInput.value.trim() : ''
-  const active = v !== '' && sizePattern.test(v)
-  // Visual feedback: dim the aspect / resolution rows so the user can
-  // see at a glance which fields are being overridden.
-  if (aspectSection) aspectSection.classList.toggle('is-overridden', active)
-  if (resolutionField) resolutionField.classList.toggle('is-overridden', active)
-  // Belt-and-suspenders: also disable the underlying form controls so
-  // the FormData snapshot is guaranteed to omit them. (The browser
-  // excludes disabled inputs from submission, so this is what makes
-  // the override actually take effect on the wire.)
-  if (aspectHidden) aspectHidden.disabled = active
-  if (resolutionSel) resolutionSel.disabled = active || resolutionSel.dataset.resKind !== kind
+
+  // Suppress the "More…" dropdown if it adds nothing beyond the pills.
+  // (Aspect.js does the same check; harmless to do twice — both run
+  // on the same render and write the same value.)
+  void aspectMore
 }
+
+export function initKind() {
+  const sizeInput = getSizeInput()
+  if (sizeInput) {
+    // Initialize state.sizeOverride from the input.
+    state.sizeOverride = sizeInput.value || ''
+    sizeInput.addEventListener('input', () => {
+      setState({ sizeOverride: sizeInput.value || '' })
+    })
+  }
+  const form = getForm()
+  for (const radio of form.querySelectorAll('input[name=type]')) {
+    radio.addEventListener('change', () => {
+      setKind(radio.value)
+    })
+  }
+  subscribe(renderKind)
+}
+
+export function setKind(v) {
+  if (v !== 'image' && v !== 'video') return
+  // Sync the radio (the source of truth for the form), then update state.
+  const form = getForm()
+  const radio = form.querySelector(`input[name=type][value="${v}"]`)
+  if (radio) radio.checked = true
+  setState({ kind: v })
+}
+
+// Back-compat shims. The new architecture re-renders everything in
+// render(), so explicit calls are redundant. We keep the function
+// signatures so other modules don't need to change.
+export function refreshKindVisibility() { renderKind() }
+export function refreshResolutionSelect() { renderKind() }
+export function refreshSizeOverride() { renderKind() }
