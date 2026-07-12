@@ -16,36 +16,12 @@ set STUDIO_PORT=7878
 
 cd /d "%~dp0"
 
-REM --- 1. Make sure the binary exists and is up to date ---
+REM --- 1. Always rebuild the binary. ---
 REM
 REM The Go binary embeds the static/ directory at compile time via
-REM //go:embed. If you edit app.js, index.html, or any other file in
-REM static/ without rebuilding, the running server keeps serving the
-REM OLD copies from the binary. That's caused real "I edited the file
-REM and nothing changed" confusion, so we now rebuild automatically
-REM whenever the binary is older than any of the embedded source files.
-REM
-REM Pass --no-build to skip the rebuild check (e.g. in CI when you've
-REM already built in an earlier step).
-set SKIP_BUILD=0
-for %%A in (%*) do (
-    if /I "%%~A"=="--no-build" set SKIP_BUILD=1
-)
-
-if not exist studio.exe goto :build
-if %SKIP_BUILD%==1 goto :after_build
-
-REM Compare the latest mtime of all source files (Go + static/) to the
-REM binary's mtime using PowerShell (always present on Windows). One
-REM short invocation, no batch gymnastics, no external tools needed.
-for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "$src = Get-ChildItem -Recurse -File -Path . -Include *.go, static\* | Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.FullName -notmatch '\\.git\\' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1; $bin = Get-Item studio.exe; if ($src.LastWriteTime -gt $bin.LastWriteTime) { 'REBUILD' } else { 'SKIP' }"`) do set BUILD_DECISION=%%T
-if /I "%BUILD_DECISION%"=="REBUILD" (
-    echo Source files newer than studio.exe — rebuilding...
-    goto :build
-)
-goto :after_build
-
-:build
+REM //go:embed. To avoid the "I edited app.js and nothing changed"
+REM trap, we always rebuild before launching — no mtime check, no
+REM shortcut. The dev loop is "edit → start script → see the change".
 echo Building studio.exe...
 where go >nul 2>nul
 if errorlevel 1 (
@@ -59,8 +35,6 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-
-:after_build
 
 REM --- 2. Pre-flight check: do we have a key somewhere? ---
 REM Fast path: env var is set. The server will use it directly.
