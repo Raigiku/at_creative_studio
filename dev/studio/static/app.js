@@ -17,18 +17,8 @@ const ASPECT_RATIOS = {
 // and when the user switches the Output (image/video) selector.
 const DEFAULT_ASPECT = {
   image: '1:1',
-  video: '1:1',
+  video: '16:9',
 }
-
-// Default duration (seconds) for video. Server clamps to 1..10.
-const DEFAULT_DURATION = 5
-
-// Default resolution for video (also pre-selected in the dropdown).
-const DEFAULT_RESOLUTION = '720p'
-
-// Default W×H size (used as the pre-filled value of the size input on
-// initial load and on type-change, so the user never has to retype it).
-const DEFAULT_SIZE = '1280x720'
 
 // Quick-pick buttons in the row of pills. Each must exist in the enum above
 // (or be the empty "Provider default").
@@ -115,9 +105,10 @@ function refreshModelOptions() {
 function refreshKindVisibility() {
   const kind = currentType() // "image" | "video"
   for (const el of form.querySelectorAll('[data-show]')) {
-    if (el.dataset.show === kind) el.removeAttribute('hidden')
-    else el.setAttribute('hidden', '')
-    // Disable hidden fields so they don't ride along in the form submission.
+    el.style.display = el.dataset.show === kind ? '' : 'none'
+  }
+  // Disable hidden fields so they don't ride along in the form submission.
+  for (const el of form.querySelectorAll('[data-show]')) {
     const hidden = el.dataset.show !== kind
     for (const inner of el.querySelectorAll('input, select, textarea')) {
       inner.disabled = hidden
@@ -173,79 +164,6 @@ for (const pill of ratiosBar.querySelectorAll('.pill')) {
 }
 aspectMore.addEventListener('change', () => setAspectActive(aspectMore.value))
 
-// ---- size mode switcher (video only) ----
-// The user picks ONE of two modes via a segmented control:
-//   * "aspect"  → the 📐 Aspect ratio section is visible (aspect pills + resolution)
-//   * "size"    → that section is hidden and the 📏 Size W×H input takes over
-// Default is "aspect" so the user sees the familiar aspect + resolution first.
-const sizeInput = document.getElementById('size_vid')
-
-function getSizeMode() {
-  const checked = form.querySelector('input[name=size_mode]:checked')
-  return checked ? checked.value : 'aspect' // default = aspect
-}
-
-function applySizeMode() {
-  const mode = getSizeMode()
-  const isVideo = currentType() === 'video'
-  // Toggle the Aspect ratio section (section-wide hide/show). For image mode
-  // the section is always visible regardless of the size mode picker, so we
-  // force it open when not in video mode.
-  const aspectSection = form.querySelector('[data-mode-section="aspect"]')
-  if (aspectSection) {
-    if (!isVideo || mode === 'aspect') aspectSection.removeAttribute('hidden')
-    else aspectSection.setAttribute('hidden', '')
-  }
-  // Toggle the Size W×H field.
-  const sizeField = form.querySelector('[data-mode-section="size"]')
-  if (sizeField) {
-    if (isVideo && mode === 'size') sizeField.removeAttribute('hidden')
-    else sizeField.setAttribute('hidden', '')
-  }
-  // Form data hygiene: `hidden` on a parent doesn't exclude inputs from
-  // FormData, so we explicitly `disabled` the inactive group too. The
-  // `disabled` attribute alone is enough to keep stale values out of the
-  // submitted form, so we DON'T clear the inactive group's value here —
-  // that lets the user preserve their inputs when toggling modes.
-  const resEl = document.getElementById('resolution_vid')
-  if (resEl) resEl.disabled = !isVideo || mode === 'size'
-  if (sizeInput) sizeInput.disabled = !isVideo || mode !== 'size'
-  // The hidden `aspect_ratio` form field always reflects the pill state;
-  // clear it when switching to size mode so the user sees a clean reset
-  // (the form value mirrors the pills, which are now hidden).
-  if (isVideo && mode === 'size') {
-    setAspectActive('')
-  }
-}
-
-form.querySelectorAll('input[name=size_mode]').forEach((r) => {
-  r.addEventListener('change', applySizeMode)
-})
-
-// Auto-switch helpers: typing in size, picking a resolution, or picking an
-// aspect pill all jump the picker to the matching mode.
-sizeInput.addEventListener('input', () => {
-  if (sizeInput.value.trim() !== '' && getSizeMode() !== 'size') {
-    document.getElementById('size_mode-size').checked = true
-    applySizeMode()
-  }
-})
-const resolutionSelEarly = document.getElementById('resolution_vid')
-resolutionSelEarly.addEventListener('change', () => {
-  if (resolutionSelEarly.value && getSizeMode() !== 'aspect') {
-    document.getElementById('size_mode-aspect').checked = true
-    applySizeMode()
-  }
-})
-for (const pill of ratiosBar.querySelectorAll('.pill')) {
-  pill.addEventListener('click', () => {
-    if (getSizeMode() !== 'aspect') {
-      document.getElementById('size_mode-aspect').checked = true
-      applySizeMode()
-    }
-  })
-}
-
 // ---- main refresh when type changes ----
 function refreshAll() {
   const kind = currentType() // "image" | "video"
@@ -259,34 +177,10 @@ function refreshAll() {
   refreshKindVisibility()
   refreshResolutionSelect()
   refreshRefHint()
-  applySizeMode()
 }
 
 for (const radio of form.querySelectorAll('input[name=type]')) {
   radio.addEventListener('change', () => {
-    // Reset video-specific fields to their per-kind defaults so the user
-    // never carries over a stale 1080p + 9:16 from an image session.
-    const durationEl = document.getElementById('duration')
-    const sizeEl = document.getElementById('size_vid')
-    const resEl = document.getElementById('resolution_vid')
-    if (durationEl) durationEl.value = String(DEFAULT_DURATION)
-    if (sizeEl) sizeEl.value = DEFAULT_SIZE
-    if (resEl) resEl.value = DEFAULT_RESOLUTION
-    // Reset size mode back to "aspect" so the user always starts with the
-    // familiar aspect + resolution view.
-    const sizeModeDefault = document.getElementById('size_mode-aspect')
-    if (sizeModeDefault) sizeModeDefault.checked = true
-    // Clear the first/last frame inputs when switching modes — they only
-    // make sense for video, and we don't want stale image bytes riding
-    // along on an image request.
-    if (frameFirstInput) {
-      frameFirstInput.value = ''
-      renderFramePreview(frameFirstInput, frameFirstPreview, 'First frame', frameFirstURLRef)
-    }
-    if (frameLastInput) {
-      frameLastInput.value = ''
-      renderFramePreview(frameLastInput, frameLastPreview, 'Last frame', frameLastURLRef)
-    }
     refreshAll()
     // Re-render so the First/Last frame badges reflect the new mode.
     if (refInput.files && refInput.files.length > 0) renderRefPreview()
@@ -329,13 +223,19 @@ function renderRefPreview() {
     idx.textContent = `#${i + 1}`
     thumb.appendChild(idx)
 
-    // Role badge (bottom-left) — for video, ref images are all "Reference #N"
-    // since first/last frame are now in their own dedicated inputs.
+    // Role badge (bottom-left) — only meaningful for video (i2v), where the
+    // SDK distinguishes first_frame vs last_frame. For image refs we skip
+    // the badge entirely; the file name is enough.
     if (isVideo) {
-      const badge = document.createElement('span')
-      badge.className = 'badge badge--ref'
-      badge.textContent = `Ref #${i + 1}`
-      thumb.appendChild(badge)
+      let label = null
+      if (n >= 2 && i === n - 1) label = 'Last frame'
+      else if (i === 0) label = 'First frame'
+      if (label) {
+        const badge = document.createElement('span')
+        badge.className = 'badge'
+        badge.textContent = label
+        thumb.appendChild(badge)
+      }
     }
 
     // File name (bottom) — always shown, ellipsised if too long.
@@ -388,65 +288,6 @@ refInput.addEventListener('change', () => {
   renderRefPreview()
 })
 
-// ---- single-image first / last frame inputs (video only) ----
-// These are independent of the multi-image "ref" input: each is one image
-// that the server forwards as FrameImages[].FrameType = first_frame / last_frame.
-const frameFirstInput = document.getElementById('frame_first')
-const frameLastInput = document.getElementById('frame_last')
-const frameFirstPreview = document.getElementById('frame_first_preview')
-const frameLastPreview = document.getElementById('frame_last_preview')
-let frameFirstObjectURL = null
-let frameLastObjectURL = null
-
-function renderFramePreview(input, preview, label, objectURLRef) {
-  // Render a single-image preview with a remove button. We keep the previous
-  // object URL on a closure variable so we can revoke it on the next change.
-  if (objectURLRef.url) URL.revokeObjectURL(objectURLRef.url)
-  preview.innerHTML = ''
-  const file = input.files && input.files[0]
-  if (!file) {
-    objectURLRef.url = null
-    preview.hidden = true
-    return
-  }
-  const url = URL.createObjectURL(file)
-  objectURLRef.url = url
-
-  const img = document.createElement('img')
-  img.src = url
-  img.alt = file.name || label
-  preview.appendChild(img)
-
-  const lbl = document.createElement('span')
-  lbl.className = 'label'
-  lbl.textContent = label
-  preview.appendChild(lbl)
-
-  const remove = document.createElement('button')
-  remove.type = 'button'
-  remove.className = 'remove'
-  remove.setAttribute('aria-label', `Remove ${label}`)
-  remove.textContent = '✕'
-  remove.addEventListener('click', (ev) => {
-    ev.preventDefault()
-    input.value = '' // single input: just blank it
-    renderFramePreview(input, preview, label, objectURLRef)
-  })
-  preview.appendChild(remove)
-
-  preview.hidden = false
-}
-
-const frameFirstURLRef = { url: null }
-const frameLastURLRef = { url: null }
-
-frameFirstInput.addEventListener('change', () => {
-  renderFramePreview(frameFirstInput, frameFirstPreview, 'First frame', frameFirstURLRef)
-})
-frameLastInput.addEventListener('change', () => {
-  renderFramePreview(frameLastInput, frameLastPreview, 'Last frame', frameLastURLRef)
-})
-
 // On load: fetch the model list
 ;(async () => {
   try {
@@ -462,18 +303,6 @@ frameLastInput.addEventListener('change', () => {
 // ---- submit ----
 form.addEventListener('submit', async (e) => {
   e.preventDefault()
-
-  // Required-field guard: `required` is set on the prompt <textarea>, but
-  // because we call preventDefault() the browser never gets a chance to
-  // run its native validation. We check explicitly here so the user gets
-  // a friendly status-bar message instead of a silent no-op.
-  const promptEl = document.getElementById('prompt')
-  if (!promptEl || promptEl.value.trim() === '') {
-    setStatus('error', '❌ Prompt is required — describe what you want to generate.')
-    if (promptEl) promptEl.focus()
-    return
-  }
-
   preview.innerHTML = ''
   button.disabled = true
   setStatus('generating', 'Submitting to OpenRouter... 🚀')

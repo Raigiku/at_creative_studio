@@ -12,11 +12,21 @@
 //	POST /api/generate  — accepts multipart form, dispatches gen, returns { kind, url, path }
 //	GET  /api/output/   — serves files from the ai_outputs/ directory
 //
-// API key: read from OPENROUTER_API_KEY env var.
+// API key: loaded from the OS credential manager (preferred) or the
+// OPENROUTER_API_KEY env var (fallback). Manage it with the platform-
+// native scripts in scripts/ — there is NO credential subcommand in this
+// binary. See scripts\set-key.bat (Windows) or scripts/set-key.sh
+// (macOS/Linux) for details.
+//
 // Output dir: AI_OUTPUTS_DIR env var, or "<projectRoot>/ai_outputs" by default.
 //
-// Build: go build -o studio.exe
-// Run:   studio.exe  (or double-click start-studio.bat)
+// Build: go build -o studio.exe        (Windows)
+//
+//	go build -o studio            (macOS / Linux)
+//
+// Run:   studio.exe                     (Windows, or double-click start-studio.bat)
+//
+//	./studio                       (macOS / Linux, or run ./start-studio.sh)
 package main
 
 import (
@@ -24,6 +34,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -39,6 +50,15 @@ import (
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
+	"github.com/zalando/go-keyring"
+	"gopkg.in/yaml.v3"
+)
+
+// Credential-store identifiers. We use these names everywhere (the server,
+// the CLI subcommands, the helper scripts) so the user can grep for them.
+const (
+	keyringService = "creative-studio"
+	keyringUser    = "openrouter-api-key"
 )
 
 //go:embed static
@@ -67,17 +87,71 @@ type modelEntry struct {
 	Name string `json:"name"`
 }
 
+// ----- credential lookup -----
+//
+// The server only READS the key; storing / clearing is handled by the
+// platform-native scripts in scripts/.
+//
+// Lookup order:
+//
+//  1. $OPENROUTER_API_KEY environment variable
+//     Useful for CI, containers, or one-off overrides. Always wins if set.
+//
+//  2. OS credential manager (Windows Credential Manager / macOS Keychain /
+//     Secret Service on Linux). This is the recommended path for normal
+//     desktop use — the key is stored encrypted in the OS vault, not in
+//     plain-text files or environment variables that get inherited by
+//     child processes. Set it up with scripts\set-key.bat (Windows) or
+//     scripts/set-key.sh (macOS/Linux).
+
+const (
+	keySourceEnv     = "env"
+	keySourceKeyring = "keyring"
+)
+
+// loadAPIKey returns the API key and which source it came from. An empty key
+// with empty source means "not found anywhere".
+func loadAPIKey() (string, string) {
+	if env := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); env != "" {
+		return env, keySourceEnv
+	}
+	v, err := keyring.Get(keyringService, keyringUser)
+	if err != nil {
+		// ErrNotFound is expected on first run; surface anything else so the
+		// user knows the keyring is broken (e.g. on a headless server).
+		if !errors.Is(err, keyring.ErrNotFound) {
+			fmt.Fprintln(os.Stderr, "warning: could not read from OS credential manager:", err)
+		}
+		return "", ""
+	}
+	return strings.TrimSpace(v), keySourceKeyring
+}
+
 func main() {
+	// The server has one job: serve. For credential management, see the
+	// scripts in scripts/ (set-key.bat, clear-key.bat, where-is-the-key.bat, etc.).
+
 	port := os.Getenv("STUDIO_PORT")
 	if port == "" {
 		port = defaultPort
 	}
 
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	apiKey, keySource := loadAPIKey()
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: OPENROUTER_API_KEY is not set.")
-		fmt.Fprintln(os.Stderr, "Set it in your environment, or edit start-studio.bat.")
+		fmt.Fprintln(os.Stderr, "ERROR: No OpenRouter API key found.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Option A — OS credential manager (recommended):")
+		fmt.Fprintln(os.Stderr, "    studio.exe set-key")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Option B — environment variable (one-off / CI):")
+		fmt.Fprintln(os.Stderr, "    set OPENROUTER_API_KEY=sk-or-v1-...")
 		os.Exit(1)
+	}
+
+	if keySource == keySourceEnv {
+		fmt.Fprintln(os.Stderr, "note: using OPENROUTER_API_KEY env var; run `studio.exe set-key` to store it in the OS credential manager.")
+	} else {
+		fmt.Fprintln(os.Stderr, "note: using API key from OS credential manager.")
 	}
 
 	client := openrouter.New(openrouter.WithSecurity(apiKey))
@@ -156,17 +230,32 @@ func resolveOutputDir() string {
 	return filepath.Join(cwd, defaultOutDir)
 }
 
-// loadModels returns a curated list of image and video models. The full OpenRouter
-// catalog is huge; we expose the most useful ones for creative generation.
+// loadModels returns the list of image and video models exposed in the UI.
+//
+// The list is read from a YAML file. The path is resolved in this order:
+//
+//  1. $STUDIO_MODELS env var (absolute or relative to CWD)
+//  2. <binaryDir>/models.yaml  (same directory as the running executable)
+//  3. <repoRoot>/dev/studio/models.yaml  (source-tree fallback for `go run`)
+//  4. built-in defaults  (used only if every above is missing — and on
+//     first run we *write* the defaults back to (2) so the user can see
+//     the format and edit it)
+//
+// The file format is:
+//
+//	image:
+//	  - id: x-ai/grok-imagine-image-quality
+//	    name: Grok Imagine (Image) — quality
+//	video:
+//	  - id: bytedance/seedance-2.0
+//	    name: Seedance 2.0 — video
+//
+// `id` is required; `name` is optional and defaults to `id`. Comments and
+// blank lines are allowed.
 func loadModels(ctx context.Context, client *openrouter.OpenRouter) modelLists {
-	imageModels := []modelEntry{
-		{ID: "x-ai/grok-imagine-image-quality", Name: "Grok Imagine (Image) — quality"},
-	}
-	videoModels := []modelEntry{
-		{ID: "bytedance/seedance-2.0", Name: "Seedance 2.0 — video"},
-		{ID: "x-ai/grok-imagine-video", Name: "Grok Imagine — video"},
-		{ID: "google/veo-3.1-lite", Name: "Veo 3.1 Lite — video"},
-	}
+	// Built-in defaults used as a last-resort fallback AND written out
+	// on first run so the user has a model.yaml to edit.
+	defaults := defaultModels()
 
 	// Best-effort: confirm the API key works. We don't currently rewrite the
 	// curated list with the live one because the full list is hundreds of
@@ -177,7 +266,189 @@ func loadModels(ctx context.Context, client *openrouter.OpenRouter) modelLists {
 		fmt.Fprintln(os.Stderr, "warning: could not verify API key via /models:", err)
 	}
 
-	return modelLists{Image: imageModels, Video: videoModels}
+	// Try to load from the YAML config file.
+	path, err := resolveModelsPath()
+	if err != nil || path == "" {
+		// No path resolved; use defaults and move on.
+		fmt.Fprintln(os.Stderr, "note: no models.yaml found; using built-in defaults.")
+		return defaults
+	}
+
+	loaded, err := parseModelsYAML(path)
+	if err != nil {
+		// Config file exists but is broken — surface the error loudly so the
+		// user fixes it. Fall back to defaults so the server still works.
+		fmt.Fprintf(os.Stderr, "ERROR: failed to parse %s: %v\n", path, err)
+		fmt.Fprintln(os.Stderr, "  Falling back to built-in defaults. Edit the file and restart.")
+		return defaults
+	}
+	if loaded.Image == nil && loaded.Video == nil {
+		// File was empty / had no recognized sections. Treat as "no models".
+		return defaults
+	}
+	fmt.Fprintf(os.Stderr, "Loaded models from %s\n", path)
+	return loaded
+}
+
+// modelsYAML is the on-disk schema. We only expose `id` and `name`; the
+// id is the OpenRouter model identifier and name is what's shown in the
+// dropdown. The shape is intentionally simple so a user can edit it in
+// any text editor without learning the OpenRouter SDK.
+type modelsYAML struct {
+	Image []modelYAMLEntry `yaml:"image"`
+	Video []modelYAMLEntry `yaml:"video"`
+}
+
+type modelYAMLEntry struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
+}
+
+// defaultModels is the curated list we ship with. It is the same content
+// the server used before the YAML config was introduced, so upgrading
+// users see no behavior change on day one.
+func defaultModels() modelLists {
+	return modelLists{
+		Image: []modelEntry{
+			{ID: "x-ai/grok-imagine-image-quality", Name: "Grok Imagine (Image) — quality"},
+		},
+		Video: []modelEntry{
+			{ID: "bytedance/seedance-2.0", Name: "Seedance 2.0 — video"},
+			{ID: "x-ai/grok-imagine-video", Name: "Grok Imagine — video"},
+			{ID: "google/veo-3.1-lite", Name: "Veo 3.1 Lite — video"},
+		},
+	}
+}
+
+// resolveModelsPath determines which models.yaml to use. Returns ("", nil)
+// if no candidate file exists (the caller should fall back to defaults).
+// If a file doesn't exist but we know where it would go, we *create* it
+// with the default contents so the user can immediately see the format.
+func resolveModelsPath() (string, error) {
+	candidates := modelsYAMLCandidates()
+	// First existing candidate wins.
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	// None exist. Try to create one at the preferred location (binaryDir)
+	// so the user has a discoverable file. We don't fail the server on
+	// write errors here — just log.
+	if len(candidates) > 0 {
+		preferred := candidates[0]
+		if err := writeDefaultModelsYAML(preferred); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write default %s: %v\n", preferred, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Wrote default models to %s — edit it and restart to customize.\n", preferred)
+		}
+	}
+	return "", nil
+}
+
+// modelsYAMLCandidates returns candidate paths in priority order:
+//
+//  1. $STUDIO_MODELS env var (if set)
+//  2. <binaryDir>/models.yaml
+//  3. <repoRoot>/dev/studio/models.yaml
+func modelsYAMLCandidates() []string {
+	var out []string
+	if env := strings.TrimSpace(os.Getenv("STUDIO_MODELS")); env != "" {
+		out = append(out, filepath.Clean(env))
+	}
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, filepath.Join(filepath.Dir(exe), "models.yaml"))
+	}
+	// Source-tree fallback: walk up to find the workspace root and use
+	// dev/studio/models.yaml there. This makes `go run .` from a source
+	// checkout work without extra setup.
+	if cwd, err := os.Getwd(); err == nil {
+		dir := cwd
+		for i := 0; i < 6; i++ {
+			if _, err := os.Stat(filepath.Join(dir, "dev", "studio", "go.mod")); err == nil {
+				out = append(out, filepath.Join(dir, "dev", "studio", "models.yaml"))
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	return out
+}
+
+// parseModelsYAML reads a models config file, validates each entry, and
+// converts it into the modelLists shape the rest of the code uses.
+func parseModelsYAML(path string) (modelLists, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return modelLists{}, err
+	}
+	var raw modelsYAML
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return modelLists{}, fmt.Errorf("yaml parse: %w", err)
+	}
+
+	out := modelLists{
+		Image: yamlEntriesToModelEntries(raw.Image, "image"),
+		Video: yamlEntriesToModelEntries(raw.Video, "video"),
+	}
+	return out, nil
+}
+
+// yamlEntriesToModelEntries trims, validates and converts raw YAML entries.
+// An entry without an id is silently dropped (with a warning) — a name
+// alone is not useful since it can't be sent to the SDK.
+func yamlEntriesToModelEntries(in []modelYAMLEntry, section string) []modelEntry {
+	out := make([]modelEntry, 0, len(in))
+	for i, e := range in {
+		id := strings.TrimSpace(e.ID)
+		if id == "" {
+			fmt.Fprintf(os.Stderr, "warning: %s[%d] has empty id; skipping.\n", section, i)
+			continue
+		}
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			name = id
+		}
+		out = append(out, modelEntry{ID: id, Name: name})
+	}
+	return out
+}
+
+// writeDefaultModelsYAML writes a commented default models.yaml to the
+// given path. We write the comments manually (yaml.v3's Marshaler can't
+// emit them) so the user can see the format and what's customizable.
+func writeDefaultModelsYAML(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	d := defaultModels()
+	var b strings.Builder
+	b.WriteString("# Creative Studio — model list\n")
+	b.WriteString("#\n")
+	b.WriteString("# Edit this file to add or remove the models that show up in the\n")
+	b.WriteString("# dropdown. Restart studio.exe after editing.\n")
+	b.WriteString("#\n")
+	b.WriteString("# Each entry needs an `id` (the OpenRouter model identifier) and\n")
+	b.WriteString("# optionally a `name` (what's shown in the dropdown). If `name` is\n")
+	b.WriteString("# omitted, the id is used as the name.\n")
+	b.WriteString("#\n")
+	b.WriteString("# Example: add a new image model by appending a new bullet under\n")
+	b.WriteString("# `image:` — no need to touch any other file.\n")
+	b.WriteString("\n")
+	b.WriteString("image:\n")
+	for _, m := range d.Image {
+		fmt.Fprintf(&b, "  - id: %q\n    name: %q\n", m.ID, m.Name)
+	}
+	b.WriteString("\nvideo:\n")
+	for _, m := range d.Video {
+		fmt.Fprintf(&b, "  - id: %q\n    name: %q\n", m.ID, m.Name)
+	}
+	b.WriteString("\n")
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 // ----- generation -----
