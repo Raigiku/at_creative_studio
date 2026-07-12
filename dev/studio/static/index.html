@@ -960,6 +960,14 @@
   </details>
 </div>
 
-<script src="app.js"></script>
+<!--
+  app.js is loaded as a module (deferred by default), so it doesn't
+  race with the DOM being parsed. The app.js file is a thin
+  orchestrator that imports ./modules/*.js. Each module owns one
+  concern (aspect, kind, references, frames, capabilities, submit,
+  status). Modules communicate via callbacks declared in each
+  module's init() parameter list — no hidden import cycles.
+-->
+<script type="module" src="app.js"></script>
 </body>
 </html>
