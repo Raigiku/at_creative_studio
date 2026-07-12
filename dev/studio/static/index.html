@@ -119,6 +119,24 @@
     margin-left: 4px;
   }
 
+  /* ---------- "Overridden" indicator ----------
+     Added to a .section / .field when its inputs are being ignored
+     because another field takes precedence (e.g. the user typed a
+     `size` override that nullifies aspect_ratio + resolution). We keep
+     the fields visible — only the value is sent, not the overridden
+     ones — and dim them so the user can see at a glance which values
+     won't actually go to the model. */
+  .is-overridden {
+    opacity: 0.45;
+  }
+  .is-overridden .section-label::after {
+    content: " — overridden";
+    color: var(--label-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+
   /* ---------- Segmented control (iOS style) ---------- */
   .segmented {
     display: grid;
@@ -679,23 +697,8 @@
       <select id="model" name="model" required></select>
     </div>
 
-    <!-- ===== Output size mode picker (video only) ===== -->
-    <div class="section" data-show="video">
-      <span class="section-label">🔀 Output size mode</span>
-      <div class="grid">
-        <div class="field field-full">
-          <div class="segmented segmented-2" role="radiogroup" aria-label="Video output size mode">
-            <input type="radio" name="size_mode" id="size_mode-aspect" value="aspect" checked />
-            <label for="size_mode-aspect">📐 Aspect + Res</label>
-            <input type="radio" name="size_mode" id="size_mode-size" value="size" />
-            <label for="size_mode-size">📏 Size</label>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== Aspect ratio (always visible, but hidden in video+size mode) ===== -->
-    <div class="section" data-mode-section="aspect">
+    <!-- ===== Aspect ratio ===== -->
+    <div class="section">
       <span class="section-label">📐 Aspect ratio</span>
 
       <div class="grid">
@@ -798,10 +801,12 @@
           <div id="frame_last_preview" class="frame-preview" hidden></div>
         </div>
 
-        <!-- Size W×H (only visible when "Size" mode is selected) -->
-        <div class="field field-full" data-mode-section="size" hidden>
-          <label class="section-label" for="size_vid">📏 Size <span class="help">(W×H, e.g. 1280×720)</span></label>
-          <input type="text" class="input" id="size_vid" name="size" pattern="^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$" value="1280x720" placeholder="1280x720" />
+        <!-- Exact W×H (video only). When set, it overrides the
+             aspect_ratio + resolution fields below (we disable them so
+             only one of the two goes on the wire). Empty = no override. -->
+        <div class="field field-full" data-show="video">
+          <label class="section-label" for="size_vid">📏 Exact size <span class="help">(W×H digits, e.g. 1280×720 — overrides Aspect + Resolution when set)</span></label>
+          <input type="text" class="input" id="size_vid" name="size" inputmode="numeric" pattern="^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$" value="" placeholder="leave empty to use Aspect + Resolution" />
         </div>
 
         <!-- Duration: prominent (not in Advanced) -->

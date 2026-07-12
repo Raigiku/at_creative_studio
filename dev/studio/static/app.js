@@ -24,6 +24,12 @@ const DEFAULT_ASPECT = {
 // (or be the empty "Provider default").
 const QUICK_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:2"]
 
+// WxH pattern for the "Exact size" field. Mirrors the server-side
+// `sizePattern` in dev/studio/params.go and the `pattern=` attribute on
+// the size input in index.html, so client-side validity, server-side
+// validation, and the live override behavior all agree.
+const sizePattern = /^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$/
+
 const form = document.getElementById('gen-form')
 const status = document.getElementById('status')
 const preview = document.getElementById('preview')
@@ -127,6 +133,60 @@ function refreshResolutionSelect() {
   }
 }
 
+// ---- exact-size override (video only) ----
+//
+// The video options section has an `Exact size` field (input
+// name="size", placeholder says "leave empty to use Aspect +
+// Resolution"). When the user types a valid WxH string, that value
+// overrides `aspect_ratio` and `resolution`: we disable those two
+// fields so only `size` is sent on the wire, and we add the
+// `is-overridden` class to the Aspect ratio section and to the
+// resolution field's row so the user sees that those values won't
+// take effect.
+//
+// When the field is empty, we restore everything to normal.
+const sizeInput = document.getElementById('size_vid')
+// Walk up from the hidden aspect_ratio input to find the enclosing
+// <div class="section">. We don't use :has() so this works in every
+// browser shipped in the last few years.
+function sectionOf(el) {
+  while (el && el !== form) {
+    if (el.classList && el.classList.contains('section')) return el
+    el = el.parentElement
+  }
+  return null
+}
+const aspectSection = sectionOf(document.getElementById('aspect_ratio'))
+const resolutionField = form.querySelector('select[name=resolution][data-res-kind="video"]')?.closest('.field')
+const resolutionSel = form.querySelector('select[name=resolution][data-res-kind="video"]')
+
+function refreshSizeOverride() {
+  // Only meaningful in video mode — in image mode the size field is
+  // hidden anyway (data-show="video" on its wrapper).
+  const kind = currentType()
+  if (kind !== 'video') {
+    if (aspectSection) aspectSection.classList.remove('is-overridden')
+    if (resolutionField) resolutionField.classList.remove('is-overridden')
+    if (aspectHidden) aspectHidden.disabled = false
+    if (resolutionSel) resolutionSel.disabled = resolutionSel.dataset.resKind !== kind
+    return
+  }
+  const v = sizeInput ? sizeInput.value.trim() : ''
+  const active = v !== '' && sizePattern.test(v)
+  // Visual feedback: dim the aspect / resolution rows so the user can
+  // see at a glance which fields are being overridden.
+  if (aspectSection) aspectSection.classList.toggle('is-overridden', active)
+  if (resolutionField) resolutionField.classList.toggle('is-overridden', active)
+  // Belt-and-suspenders: also disable the underlying form controls so
+  // the FormData snapshot is guaranteed to omit them. (The browser
+  // excludes disabled inputs from submission, so this is what makes
+  // the override actually take effect on the wire.)
+  if (aspectHidden) aspectHidden.disabled = active
+  if (resolutionSel) resolutionSel.disabled = active || resolutionSel.dataset.resKind !== kind
+}
+
+if (sizeInput) sizeInput.addEventListener('input', refreshSizeOverride)
+
 // ---- aspect-ratio pills + "More..." dropdown ----
 function buildAspectRatioOptions(kind) {
   aspectMore.innerHTML = ''
@@ -176,6 +236,7 @@ function refreshAll() {
   refreshModelOptions()
   refreshKindVisibility()
   refreshResolutionSelect()
+  refreshSizeOverride()
   refreshRefHint()
 }
 
@@ -405,8 +466,13 @@ function disableFields(names) {
       if (d) d.value = '5'
     }
     if (name === 'size') {
+      // Server says the model doesn't support `size`. The natural
+      // fallback is to clear the override so the user goes back to
+      // using aspect_ratio + resolution, which are universally
+      // supported.
       const sz = form.querySelector('input[name="size"]')
       if (sz) sz.value = ''
+      refreshSizeOverride()
     }
   }
   // Re-run a couple of UI refreshes so the disabled state is visible
