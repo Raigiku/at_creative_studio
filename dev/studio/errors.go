@@ -42,11 +42,22 @@ const (
 	errCodeInternal    = "internal"           // anything we couldn't classify
 )
 
+// genError is the JSON envelope every generation failure is
+// serialised into. The UI renders the `error` string in the
+// status bar and (if present) pretty-prints `raw` under a
+// collapsible disclosure.
 type genError struct {
-	Message           string   `json:"error"`
-	Code              string   `json:"code"`
-	Retryable         bool     `json:"retryable"`
-	UnsupportedFields []string `json:"unsupportedFields,omitempty"`
+	Message           string          `json:"error"`
+	Code              string          `json:"code"`
+	Retryable         bool            `json:"retryable"`
+	UnsupportedFields []string        `json:"unsupportedFields,omitempty"`
+	// Raw is the upstream response body for SDK-classified
+	// failures. It's a json.RawMessage so the client can pretty-
+	// print it without re-parsing; "" when there's no upstream
+	// body to forward (e.g. our own validation, network errors,
+	// context cancellation). The UI hides the disclosure when
+	// this is empty.
+	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
 // writeGenError logs the original error to stderr (so the launcher
@@ -99,37 +110,42 @@ func classifySDKError(err error) (int, genError) {
 	// Typed SDK errors. Each one has a parsed body in `Error_` with a
 	// `Message` and sometimes a numeric `Code`. Go's type switch binds
 	// the case variable to the static type `error` when the switch has
-	// a default, so we re-assert per case.
-	switch err.(type) {
+	// a default, so we re-assert per case. We re-marshal the original
+	// SDK struct into the `raw` field of the genError so the UI can
+	// pretty-print the exact JSON OpenRouter sent back.
+	switch e := err.(type) {
 	case *sdkerrors.UnauthorizedResponseError:
-		var e *sdkerrors.UnauthorizedResponseError = err.(*sdkerrors.UnauthorizedResponseError)
 		return http.StatusUnauthorized, genError{
 			Message: friendlyAuthMessage(e.Error_.GetMessage()),
 			Code:    errCodeAuth,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.ForbiddenResponseError:
-		var e *sdkerrors.ForbiddenResponseError = err.(*sdkerrors.ForbiddenResponseError)
 		msg := e.Error_.GetMessage()
 		if isModerationMessage(msg) {
 			return http.StatusForbidden, genError{
 				Message: "the request was blocked by the provider's content filter. Try rewording the prompt or removing the reference image.",
 				Code:    errCodeModeration,
+				Raw:     rawSDKErrorEnvelope(e),
 			}
 		}
 		return http.StatusForbidden, genError{
 			Message: friendlyAuthMessage(msg),
 			Code:    errCodeAuth,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.PaymentRequiredResponseError:
 		return http.StatusPaymentRequired, genError{
 			Message: "your OpenRouter account is out of credits. Top up at openrouter.ai and try again.",
 			Code:    errCodeQuota,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.TooManyRequestsResponseError:
 		return http.StatusTooManyRequests, genError{
 			Message:   "rate limit reached. Wait a few seconds and try again.",
 			Code:      errCodeRateLimit,
 			Retryable: true,
+			Raw:       rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.ProviderOverloadedResponseError,
 		*sdkerrors.ServiceUnavailableResponseError,
@@ -140,15 +156,15 @@ func classifySDKError(err error) (int, genError) {
 			Message:   "the model provider is temporarily unavailable. Please retry in a moment.",
 			Code:      errCodeUpstream,
 			Retryable: true,
+			Raw:       rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.UnprocessableEntityResponseError:
-		var e *sdkerrors.UnprocessableEntityResponseError = err.(*sdkerrors.UnprocessableEntityResponseError)
 		return http.StatusBadRequest, genError{
 			Message: friendlyBadRequestMessage(e.Error_.GetMessage()),
 			Code:    errCodeBadRequest,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.BadRequestResponseError:
-		var e *sdkerrors.BadRequestResponseError = err.(*sdkerrors.BadRequestResponseError)
 		msg := e.Error_.GetMessage()
 		if fields := extractUnsupportedFields(msg); len(fields) > 0 {
 			return http.StatusBadRequest, genError{
@@ -156,20 +172,23 @@ func classifySDKError(err error) (int, genError) {
 				Code:              errCodeUnsupported,
 				Retryable:         true,
 				UnsupportedFields: fields,
+				Raw:               rawSDKErrorEnvelope(e),
 			}
 		}
 		return http.StatusBadRequest, genError{
 			Message: friendlyBadRequestMessage(msg),
 			Code:    errCodeBadRequest,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.NotFoundResponseError, *sdkerrors.ConflictResponseError,
 		*sdkerrors.PayloadTooLargeResponseError:
 		return http.StatusBadRequest, genError{
 			Message: friendlyBadRequestMessage(extractMessage(err.Error())),
 			Code:    errCodeBadRequest,
+			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.APIError:
-		return apiErrorByStatus(err.(*sdkerrors.APIError))
+		return apiErrorByStatus(e)
 	}
 
 	// Non-SDK error. Most often a network failure (DNS, dial, TLS). The
@@ -192,18 +211,23 @@ func classifySDKError(err error) (int, genError) {
 }
 
 // apiErrorByStatus maps the generic *sdkerrors.APIError to a category
-// based on its HTTP status code.
+// based on its HTTP status code. The SDK stashes the raw response body
+// in `e.Body`; we forward it (when it parses as JSON) so the UI can
+// show the exact upstream payload.
 func apiErrorByStatus(e *sdkerrors.APIError) (int, genError) {
+	raw := rawFromAPIErrorBody(e.Body)
 	switch {
 	case e.StatusCode == 401:
 		return http.StatusUnauthorized, genError{
 			Message: friendlyAuthMessage(extractMessage(e.Body)),
 			Code:    errCodeAuth,
+			Raw:     raw,
 		}
 	case e.StatusCode == 402:
 		return http.StatusPaymentRequired, genError{
 			Message: "your OpenRouter account is out of credits. Top up at openrouter.ai and try again.",
 			Code:    errCodeQuota,
+			Raw:     raw,
 		}
 	case e.StatusCode == 403:
 		msg := extractMessage(e.Body)
@@ -211,31 +235,38 @@ func apiErrorByStatus(e *sdkerrors.APIError) (int, genError) {
 			return http.StatusForbidden, genError{
 				Message: "the request was blocked by the provider's content filter. Try rewording the prompt or removing the reference image.",
 				Code:    errCodeModeration,
+				Raw:     raw,
 			}
 		}
-		return http.StatusForbidden, genError{Message: friendlyAuthMessage(msg), Code: errCodeAuth}
+		return http.StatusForbidden, genError{
+			Message: friendlyAuthMessage(msg), Code: errCodeAuth, Raw: raw,
+		}
 	case e.StatusCode == 408, e.StatusCode == 504:
 		return http.StatusGatewayTimeout, genError{
 			Message:   "the model took too long to respond. Try again or pick a smaller resolution.",
 			Code:      errCodeUpstream,
 			Retryable: true,
+			Raw:       raw,
 		}
 	case e.StatusCode == 413:
 		return http.StatusRequestEntityTooLarge, genError{
 			Message: "the request was too large. Try fewer or smaller reference images.",
 			Code:    errCodeBadRequest,
+			Raw:     raw,
 		}
 	case e.StatusCode == 429:
 		return http.StatusTooManyRequests, genError{
 			Message:   "rate limit reached. Wait a few seconds and try again.",
 			Code:      errCodeRateLimit,
 			Retryable: true,
+			Raw:       raw,
 		}
 	case e.StatusCode >= 500 && e.StatusCode < 600:
 		return http.StatusBadGateway, genError{
 			Message:   "the model provider is temporarily unavailable. Please retry in a moment.",
 			Code:      errCodeUpstream,
 			Retryable: true,
+			Raw:       raw,
 		}
 	case e.StatusCode == 400:
 		body := extractMessage(e.Body)
@@ -245,16 +276,19 @@ func apiErrorByStatus(e *sdkerrors.APIError) (int, genError) {
 				Code:              errCodeUnsupported,
 				Retryable:         true,
 				UnsupportedFields: fields,
+				Raw:               raw,
 			}
 		}
 		return http.StatusBadRequest, genError{
 			Message: friendlyBadRequestMessage(body),
 			Code:    errCodeBadRequest,
+			Raw:     raw,
 		}
 	default:
 		return http.StatusBadGateway, genError{
 			Message: "upstream error (HTTP " + strconv.Itoa(e.StatusCode) + "): " + e.Message,
 			Code:    errCodeUpstream,
+			Raw:     raw,
 		}
 	}
 }
@@ -359,6 +393,46 @@ func extractMessage(body string) string {
 		}
 	}
 	return body
+}
+
+// rawSDKErrorEnvelope re-marshals a typed SDK error to the same JSON
+// shape OpenRouter sent us. The OpenRouter SDK parses the response body
+// into typed Go structs, so to get the original JSON back we wrap the
+// parsed `Error_` plus the envelope fields (`user_id`,
+// `openrouter_metadata`) the SDK exposes. Returns nil if anything goes
+// wrong — the caller treats that as "no raw body to forward".
+func rawSDKErrorEnvelope(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// rawFromAPIErrorBody returns the upstream response body if it's valid
+// JSON. The body is a string the SDK stashed for the *sdkerrors.APIError
+// fallback path; we hand it back to the client as-is when it parses.
+// Returns nil on parse failure or empty body.
+func rawFromAPIErrorBody(body string) json.RawMessage {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
+	if !json.Valid([]byte(body)) {
+		return nil
+	}
+	// Re-marshal to compact it (the SDK may have preserved
+	// whitespace, and we want a single canonical line for the
+	// pretty-print to break on).
+	var v any
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // friendlyAuthMessage turns a raw "No cookie auth credentials found" or

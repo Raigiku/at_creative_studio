@@ -31,7 +31,13 @@ type genResult struct {
 // per-type dispatch, and the post-processing (saving to outputDir and
 // returning the public URL). All SDK errors flow through classifySDKError
 // to produce a uniform JSON envelope.
-func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.OpenRouter, outputDir string) {
+//
+// `lists` is the in-memory model list loaded from models.yaml at
+// startup. We use it to (a) cap the number of reference images per
+// model and (b) enforce per-model cross-field constraints BEFORE
+// sending the request to OpenRouter. If the model isn't in the list,
+// those checks are skipped — the upstream 400/500 will catch it.
+func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.OpenRouter, outputDir string, lists modelLists) {
 	// Limit upload size to 50 MB (cumulative). Reference images are usually small.
 	if err := r.ParseMultipartForm(50 << 20); err != nil {
 		http.Error(w, "invalid form: "+err.Error(), http.StatusBadRequest)
@@ -63,10 +69,11 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 		// The cap is per-model: e.g. Grok Imagine allows 0–3 reference
 		// images, while the form lets you pick up to 16. The UI
 		// prevents the user from going over the model's cap, but we
-		// validate again server-side as a safety net (the cap is read
-		// from the in-memory capability cache, falling back to
-		// maxReferenceImages if the model is unknown).
-		cap := refImagesMaxForModel(modelID)
+		// validate again server-side as a safety net. The cap is read
+		// from the in-memory modelLists (the same source the UI uses
+		// to dim the picker), falling back to maxReferenceImages if
+		// the model is unknown or has no capabilities block.
+		cap := refImagesMaxForModel(lists, modelID)
 		if len(files) > cap {
 			http.Error(w, fmt.Sprintf("too many reference images: %d (max %d for model %s)", len(files), cap, modelID), http.StatusBadRequest)
 			return
@@ -116,6 +123,18 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 		// valid
 	default:
 		http.Error(w, "invalid type: "+genType, http.StatusBadRequest)
+		return
+	}
+
+	// Apply per-model cross-field parameter constraints. The
+	// capabilities block in models.yaml encodes rules like
+	// "output_compression requires output_format=jpeg|webp". We
+	// catch those here before the request leaves the server, so
+	// the user gets a specific message instead of a generic
+	// upstream 400. The data lives in the same models.yaml the UI
+	// uses to dim fields and auto-correct combinations.
+	if msg := applyCapabilitiesConstraints(lists, modelID, params); msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 

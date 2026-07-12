@@ -121,20 +121,51 @@ export function App() {
     const form = formRef.current
     if (!form) return
     const view = deriveView(state.capabilities)
+    // Walk every cap-aware field that the renderer could touch:
+    //   - enum / enum_or_range / range: clamp to allowlist
+    //   - none (boolean): clear if unsupported
+    // aspect_enum is owned by the Aspect component, so we skip it.
     for (const formName of Object.keys(FORM_NAME_TO_CAP_NAME)) {
       const fieldKind = FORM_FIELD_KIND[formName]
       if (!fieldKind) continue
-      // Only clamp the kinds that have meaningful values.
-      if (
-        fieldKind.kind !== 'enum'
-        && fieldKind.kind !== 'enum_or_range'
-        && fieldKind.kind !== 'range'
-      ) continue
+      if (fieldKind.kind === 'aspect_enum') continue
 
       const elements = form.querySelectorAll(`[${CAP_AWARE_ATTR}="${formName}"]`)
       for (const el of elements) {
         clampElement(el, formName, fieldKind, view)
       }
+    }
+  }, [state.modelID, state.capabilities])
+
+  // ---- 3c. Re-evaluate per-model cross-field constraints after
+  // every user input on a cap-aware field. When a rule fires (its
+  // `if_set` field is non-empty AND its `requires.field` is not in
+  // the allowlist), we auto-correct the dependent field to the
+  // first allowed value so the form stays submittable. The server
+  // is still the final word — if a constraint somehow slips
+  // through, the user gets the rule's `message` in the 400 body
+  // rather than a generic upstream 400.
+  useEffect(() => {
+    const form = formRef.current
+    if (!form || !state.capabilities) return
+    const onChange = () => enforceConstraints(form, state.capabilities)
+    form.addEventListener('change', onChange)
+    form.addEventListener('input', onChange)
+    // Run once on mount: the form's static defaults (e.g.
+    // output_compression=100 on gpt-image-2) may already trigger
+    // a constraint, but `change`/`input` events only fire from
+    // user input. Without this initial call, the user sees a
+    // "Format=png, Compression=100" state that's invalid by the
+    // server's rules until they touch the form. We also dispatch
+    // a synthetic `change` event so the per-field components
+    // (CapSelect, etc.) re-render with their constraint-narrowed
+    // option lists — otherwise the dropdown still shows the full
+    // enum until the user types in the trigger field.
+    enforceConstraints(form, state.capabilities)
+    form.dispatchEvent(new Event('change', { bubbles: true }))
+    return () => {
+      form.removeEventListener('change', onChange)
+      form.removeEventListener('input', onChange)
     }
   }, [state.modelID, state.capabilities])
 
@@ -195,20 +226,29 @@ function clampElement(el, formName, fieldKind, view) {
   const supported = f && f.supported
   const fallback = FIELD_FALLBACKS[formName]
 
+  // Unsupported: clear the value so it doesn't ride along to the
+  // server. The renderer also disables the element, but DOM
+  // disabling doesn't omit the value from FormData — clearing
+  // does. Handles <input type=number>, <input type=checkbox>, and
+  // <input type=text>.
+  if (!supported) {
+    if (el.type === 'checkbox') {
+      if (el.checked) el.checked = false
+    } else if (el.value !== '') {
+      el.value = ''
+    }
+    // Don't return: range/enum clamps below are no-ops for
+    // unsupported fields, but the early clear above already did
+    // the right thing.
+  }
+
   // <input type=number>: clamp numeric value.
   if (
     (fieldKind.kind === 'range'
      || (fieldKind.kind === 'enum_or_range' && f && f.detail && f.detail.type === 'range'))
     && el.type === 'number'
   ) {
-    if (!supported) {
-      // Field unsupported: clear the value so it doesn't ride
-      // along to the server. (The field is also disabled by the
-      // renderer, but DOM disabling doesn't omit the value from
-      // FormData; clearing does.)
-      if (el.value !== '') el.value = ''
-      return
-    }
+    if (!supported) return
     if (!f || !f.detail || f.detail.type !== 'range') return
     const lo = f.detail.min
     const hi = f.detail.max
@@ -240,5 +280,52 @@ function clampElement(el, formName, fieldKind, view) {
   }
   if (!el.value || !opts.includes(el.value)) {
     el.value = opts[0]
+  }
+}
+
+// fieldIsSetJS mirrors the Go-side `fieldIsSet` rule. A field is
+// "set" when its value is non-empty AND not "0" — same as
+// models.go's "non-zero" semantic — so the constraint doesn't fire
+// for an output_compression value of 0. Kept here because the
+// enforcement loop is the only place that needs it; the per-render
+// narrowing in capFields.js reuses the same definition.
+function fieldIsSetJS(value) {
+  const v = String(value || '').trim()
+  if (v === '' || v === '0') return false
+  return true
+}
+
+// Re-evaluate the active model's per-field constraints after
+// every user input. When a rule's `if_set` field is set and the
+// `requires.field` is not in the allowlist, we mutate the
+// dependent field to the first allowed value so the form stays
+// in a submittable state. The server is still the final
+// authority — submitGenerate's UI feedback will surface the
+// constraint's `message` if a rule still fires.
+function enforceConstraints(form, capabilities) {
+  if (!capabilities) return
+  const view = deriveView(capabilities)
+  if (!view || !Array.isArray(view._constraints) || view._constraints.length === 0) return
+
+  for (const c of view._constraints) {
+    if (!c || !c.requires) continue
+    const ifSetEl = form.querySelector(`[name="${CSS.escape(c.if_set)}"]`)
+    const ifSet = ifSetEl ? String(ifSetEl.value || '').trim() : ''
+    if (!fieldIsSetJS(ifSet)) continue
+    const allowed = Array.isArray(c.requires.in) ? c.requires.in : []
+    if (allowed.length === 0) continue
+    const target = form.querySelector(`[name="${CSS.escape(c.requires.field)}"]`)
+    if (!target) continue
+    const cur = String(target.value || '').trim()
+    const curLower = cur.toLowerCase()
+    const ok = allowed.some(v => String(v).toLowerCase() === curLower)
+    if (!ok) {
+      // Pick the first allowed value (case-preserved) so the
+      // dropdown still has a valid pick. The per-render
+      // narrowing in capFields.js re-renders the dropdown with
+      // only the allowed options; this mutation here keeps the
+      // current selection in sync.
+      target.value = allowed[0]
+    }
   }
 }

@@ -708,6 +708,66 @@ details.advanced > .advanced-body {
 .status--done { background: var(--green-soft); color: var(--green); }
 .status--error{ background: var(--red-soft);   color: var(--red);   }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Raw upstream response — collapsible disclosure appended AFTER the
+   status bar when the server forwards the JSON body OpenRouter
+   returned. The disclosure gets the same red-soft background as
+   the status bar so the error context is obvious, and the body is
+   a monospace pre block with scrolling. */
+.raw-response {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px 12px;
+  background: var(--red-soft);
+  color: var(--red);
+  border-radius: var(--r-input);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.raw-response > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.raw-response > summary::-webkit-details-marker { display: none; }
+.raw-response > summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.2s ease;
+  opacity: 0.85;
+}
+.raw-response[open] > summary::before { transform: rotate(90deg); }
+.raw-response-body {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.32);
+  border-radius: 8px;
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 360px;
+  overflow-y: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  word-break: normal;
+}
 #preview { margin-top: 14px; }
 #preview img, #preview video {
   max-width: 100%;

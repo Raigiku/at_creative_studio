@@ -12,6 +12,14 @@ const (
 	defaultPort     = "7878"
 	videoPollEvery  = 5 * time.Second
 	videoTimeoutMax = 10 * time.Minute
+	// imageTimeoutMax is the wall-clock budget for a single image
+	// generation call. The previous 2-minute value was shorter than
+	// some upstream providers' own internal caps (notably OpenAI's
+	// gpt-image-2), so we'd see "context deadline exceeded" surfaced
+	// as a 504 from the upstream before the model had a chance to
+	// finish. 10 minutes matches videoTimeoutMax and is comfortably
+	// more than any current image model needs.
+	imageTimeoutMax = 10 * time.Minute
 	defaultOutDir   = "ai_outputs"
 
 	// maxReferenceImages is the hard cap on the number of reference images
@@ -36,8 +44,15 @@ type modelLists struct {
 }
 
 type modelEntry struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	// Capabilities is the per-model UI block from models.yaml. nil
+	// when the entry has no capabilities block — the UI treats that
+	// as "use static defaults" (every field enabled, FIELD_FALLBACKS
+	// for enum values). The JSON contract is the same as the YAML:
+	// omitted entirely when nil, present as {"fields":...,"constraints":...}
+	// when set.
+	Capabilities *capabilities `json:"capabilities,omitempty"`
 }
 
 // Source tags returned by loadAPIKey so the server can print a useful

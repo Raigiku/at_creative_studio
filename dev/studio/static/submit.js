@@ -44,7 +44,11 @@ function buildDownloadBar(url, path) {
 }
 
 // showGenError — render an error in the status bar with an optional
-// Retry button.
+// Retry button. If the server included a `raw` field (the upstream
+// response body, re-marshalled on the Go side), drop a collapsible
+// "Show response" disclosure UNDER the status bar so the bar stays
+// a single tidy row. The disclosure is a sibling of #status, not a
+// child, so the status's flex layout isn't disturbed.
 function showGenError(body) {
   const status = document.getElementById('status')
   if (!status) return
@@ -70,6 +74,58 @@ function showGenError(body) {
     })
     status.appendChild(btn)
   }
+
+  // Drop any prior raw-response disclosure (from a previous error)
+  // and, if the server sent us upstream JSON, mount a new one as a
+  // sibling of #status. We don't put it inside #status because the
+  // status bar is a flex row; a block-level <details> would compete
+  // for the same row.
+  removeRawResponse()
+  if (body.raw != null) {
+    const next = status.nextElementSibling
+    const raw = buildRawResponse(body.raw)
+    if (next && next.id === 'raw-response') {
+      next.replaceWith(raw)
+    } else {
+      status.insertAdjacentElement('afterend', raw)
+    }
+  }
+}
+
+// removeRawResponse — strip any previously-mounted disclosure.
+// Called at the start of every submission so a new request doesn't
+// show stale JSON from a prior error.
+function removeRawResponse() {
+  const old = document.getElementById('raw-response')
+  if (old) old.remove()
+}
+
+// buildRawResponse — wrap the upstream JSON in a <details> block.
+// Collapsed by default to keep the status bar scannable. We re-parse
+// the body (it round-tripped through Go as a json.RawMessage) and
+// pretty-print with 2-space indent so nested fields stay readable.
+function buildRawResponse(raw) {
+  const wrap = document.createElement('details')
+  wrap.className = 'raw-response'
+  wrap.id = 'raw-response'
+  const summary = document.createElement('summary')
+  summary.textContent = 'Show response'
+  wrap.appendChild(summary)
+
+  const pre = document.createElement('pre')
+  pre.className = 'raw-response-body'
+  try {
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
+    const parsed = JSON.parse(text)
+    pre.textContent = JSON.stringify(parsed, null, 2)
+  } catch (_) {
+    // Fall back to the raw text. This shouldn't happen because the
+    // server only sends a `raw` field when the body parsed as JSON,
+    // but defense in depth is cheap here.
+    pre.textContent = String(raw)
+  }
+  wrap.appendChild(pre)
+  return wrap
 }
 
 // disableFields — used by the retry flow when the server tells us
@@ -108,7 +164,7 @@ function disableFields(names) {
       if (d) d.value = '5'
     }
     if (name === 'size') {
-      const sz = form.querySelector('input[name="size"]')
+      const sz = form.querySelector('[name="size"]')
       if (sz) sz.value = ''
     }
   }
@@ -125,6 +181,7 @@ export async function submitGenerate({ isRetry = false } = {}) {
   if (button) button.disabled = true
   const oldBtn = status ? status.querySelector('.retry-btn') : null
   if (oldBtn) oldBtn.remove()
+  removeRawResponse()
   setStatus('generating', isRetry ? 'Retrying... 🔁' : 'Submitting to OpenRouter... 🚀')
 
   const data = new FormData(form)

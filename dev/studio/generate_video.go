@@ -79,6 +79,8 @@ func generateVideo(ctx context.Context, client *openrouter.OpenRouter, modelID, 
 	req.GenerateAudio = boolPtr(p.GenerateAudio)
 	req.Seed = int64Ptr(p.Seed)
 
+	logVideoRequest(req)
+
 	// Submit job
 	submit, err := client.VideoGeneration.Generate(ctx, req, operations.WithOperationTimeout(2*time.Minute))
 	if err != nil {

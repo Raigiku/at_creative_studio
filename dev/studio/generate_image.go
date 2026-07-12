@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"time"
 
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
@@ -50,7 +49,9 @@ func generateImage(ctx context.Context, client *openrouter.OpenRouter, modelID, 
 	req.OutputCompression = int64Ptr(p.OutputCompression)
 	req.Seed = int64Ptr(p.Seed)
 
-	resp, err := client.Images.Generate(ctx, req, operations.WithOperationTimeout(2*time.Minute))
+	logImageRequest(req)
+
+	resp, err := client.Images.Generate(ctx, req, operations.WithOperationTimeout(imageTimeoutMax))
 	if err != nil {
 		return genResult{}, err
 	}

@@ -83,12 +83,20 @@ export function References() {
   // Hint text. The over-cap warning lives here, in the help
   // span — it does not touch the status bar.
   const modeLabel = kind === 'image' ? 'image-to-image' : 'image-to-video'
+  // When the model has its own cap, fold the note into the count
+  // text so we don't render the same "up to N" twice. When the
+  // default cap applies, the per-model note is empty and the
+  // count line is the only place this information appears.
   let hintText
   if (count === 0) {
-    hintText = `(optional — up to ${refMax}${perModelNote}, turns it into ${modeLabel})`
+    const intro = perModelNote
+      ? `(optional — ${perModelNote.replace(/^\s*\(\s*|\s*\)\s*$/g, '')}, turns it into ${modeLabel})`
+      : `(optional — up to ${refMax}, turns it into ${modeLabel})`
+    hintText = intro
   } else {
     const suffix = overCap ? '⚠️ over cap' : `will run as ${modeLabel} ✨`
-    hintText = `(${count}/${refMax} selected — ${suffix})${perModelNote}`
+    const tail = perModelNote ? ` ${perModelNote}` : ''
+    hintText = `(${count}/${refMax} selected — ${suffix})${tail}`
   }
 
   function onPick(e) {

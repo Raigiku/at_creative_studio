@@ -17,10 +17,12 @@ import { cx } from '../helpers.js'
 
 const html = htm.bind(h)
 
-// One frame slot (first OR last). Cap-aware: when the model only
-// advertises `first_frame` (and not `last_frame`) in its
-// supported_frame_images, the Last frame slot dims+disables so
-// the user can't pick a file the server would reject.
+// One frame slot (first OR last). Hidden entirely when the model
+// doesn't support this anchor (e.g. grok-video only advertises
+// first_frame, not last_frame). When the slot is hidden, the
+// useEffect drops any picked file so the next pick is clean —
+// this is local to the component that owns the file; App.js
+// doesn't need to know about frame state.
 function FrameSlot({ slot }) {
   const { state } = useStudio()
   const capName = slot === 'first' ? 'frame_first' : 'frame_last'
@@ -35,9 +37,6 @@ function FrameSlot({ slot }) {
 
   // When the model no longer supports this anchor, drop the file
   // and reset the <input>'s value so the next pick is clean.
-  // The view's `supported` boolean is false for fields not in
-  // supported_params; when state.capabilities is null, the field
-  // is treated as supported (fallback).
   useEffect(() => {
     if (isSupported || !file) return
     setFile(null)
@@ -54,8 +53,10 @@ function FrameSlot({ slot }) {
     setFile(null)
   }
 
+  if (!isSupported) return null
+
   return html`
-    <div class=${cx('field', { 'cap-unsupported': !isSupported })} data-cap-name=${capName}>
+    <div class="field" data-cap-name=${capName}>
       <label class="section-label" for=${inputId}>
         ${label} <span class="help">(optional, single image)</span>
       </label>
@@ -67,7 +68,6 @@ function FrameSlot({ slot }) {
         data-cap-name=${capName}
         accept="image/*"
         onChange=${onPick}
-        disabled=${!isSupported}
       />
       <${FramePreview}
         slot=${slot}
@@ -105,7 +105,9 @@ function FramePreview({ slot, previewId, file, onRemove }) {
 export function Frames() {
   // First/last frame slots sit side-by-side (flex row, equal
   // width). Spans both columns of VideoOptions' outer .grid so
-  // each slot gets a comfortable share of the form width.
+  // each slot gets a comfortable share of the form width. Slots
+  // that the model doesn't support are hidden by FrameSlot itself
+  // — this wrapper just lays out the row.
   return html`
     <div class="frames-row field-full">
       <${FrameSlot} slot="first" />

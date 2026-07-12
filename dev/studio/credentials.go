@@ -94,7 +94,7 @@ func loadAPIKey() (string, string) {
 	return trimmed, keySourceEnvFile
 }
 
-// findEnvFile walks up from the executable's directory looking for
+// findEnvFile walks up from the user's working directory looking for
 // envFileName. Stops as soon as:
 //
 //   - the file is found (returns its absolute path), or
@@ -104,20 +104,33 @@ func loadAPIKey() (string, string) {
 // file is expected to live OUTSIDE the repo, so any repo-internal
 // stop condition would be the wrong one.
 func findEnvFile() (string, error) {
-	// Anchor: prefer the directory of the running executable, fall
-	// back to the current working directory for `go run` (where the
-	// binary is in a temp build dir and cwd is the package dir).
-	anchor, err := os.Executable()
-	if err != nil || anchor == "" {
-		anchor, _ = os.Getwd()
-	} else {
-		anchor = filepath.Dir(anchor)
+	// Anchor: the current working directory is the user's intent —
+	// "I'm in repo X, find the .env above it." This works the same
+	// way whether the user ran the .exe directly (cwd = repo root
+	// or wherever they double-clicked from) or used `go run` from
+	// the repo root (cwd = repo root). Under `go run`, the executable
+	// lives in a temp build dir, so the previous "use the executable's
+	// directory" strategy was broken for that case.
+	if anchor, err := os.Getwd(); err == nil && anchor != "" {
+		if path, err := walkUpForEnv(anchor); err != nil || path != "" {
+			return path, err
+		}
 	}
-	if anchor == "" {
-		return "", nil
+	// Fallback: executable's directory. Useful for the case where cwd
+	// is the .exe's own dir (double-click on Windows sets cwd to the
+	// file's location) and the .env is one level up.
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		if path, err := walkUpForEnv(exeDir); err != nil || path != "" {
+			return path, err
+		}
 	}
+	return "", nil
+}
 
-	dir := anchor
+// walkUpForEnv starts at dir and walks up to the filesystem root,
+// returning the first .ai-creative-studio.env it finds (or "" if none).
+func walkUpForEnv(dir string) (string, error) {
 	for {
 		candidate := filepath.Join(dir, envFileName)
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {

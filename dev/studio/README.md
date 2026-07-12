@@ -106,19 +106,21 @@ advertised ranges whenever the model changes.
    runs), set `OPENROUTER_API_KEY` instead. The env var always wins when
    set, even if a key is also in the .env file.
 
-3. Launch the server:
+3. Launch the server. From the **repo root**, run:
 
-   - **Windows:** double-click `start-studio.bat` (or run `studio.exe`
-     directly). The launcher always rebuilds the binary (the `static/`
-     directory is embedded at compile time via `//go:embed`, so a fresh
-     build is the only way to pick up frontend edits) and does a
-     pre-flight check for the API key.
-   - **macOS / Linux:** run `./start-studio.sh` (or `./studio` directly
-     after building). Same rebuild + pre-flight, opens the browser with
-     `open` / `xdg-open`.
+   ```bash
+   go run run.go
+   ```
 
-A browser window will open to <http://localhost:7878>. To stop the server, close
-the terminal window or press `Ctrl+C` in it.
+   The `run.go` launcher (which uses a `//go:build ignore` tag, so it
+   stays out of the `dev/studio` package's own build) shells out to
+   `go run .` inside `dev/studio/`. The `//go:embed` for `static/`
+   means frontend edits are picked up automatically — no manual build
+   step. Cross-platform: works on Windows, macOS, and Linux identically.
+
+A browser window to <http://localhost:7878> will be reachable after the
+server prints `Creative Studio listening on...`. To stop the server,
+press `Ctrl+C` in the terminal.
 
 ## Managing the stored key
 

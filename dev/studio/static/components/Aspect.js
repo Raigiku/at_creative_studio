@@ -26,12 +26,18 @@ const html = htm.bind(h)
 
 // Compute the value-set for the More… dropdown given the current
 // kind and the per-model capabilities (if any).
+//
+// The server sends `state.capabilities` shaped as
+// { fields: { aspect_ratio: { type, values, ... } } } when the
+// model has a capabilities block in models.yaml. When the
+// capabilities is null (model has no block) we fall back to the
+// per-kind static list.
 function valuesForKind(state) {
-  const detail = state.capabilities
-    && state.capabilities.param_details
-    && state.capabilities.param_details.aspect_ratio
-  if (detail && detail.type === 'enum' && Array.isArray(detail.values) && detail.values.length > 0) {
-    return sortOptions(detail.values)
+  const fieldCap = state.capabilities
+    && state.capabilities.fields
+    && state.capabilities.fields.aspect_ratio
+  if (fieldCap && fieldCap.type === 'enum' && Array.isArray(fieldCap.values) && fieldCap.values.length > 0) {
+    return sortOptions(fieldCap.values)
   }
   return sortOptions(ASPECT_RATIOS[state.kind] || [])
 }

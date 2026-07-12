@@ -9,8 +9,13 @@
 //	GET  /              — serves the HTML form (static/index.html, embedded)
 //	GET  /app.js        — serves the JS bundle (static/app.js, embedded)
 //	GET  /api/models    — returns { image: [...], video: [...] } of available models
+//	GET  /api/models/{id} — returns one model's capabilities block, or null
 //	POST /api/generate  — accepts multipart form, dispatches gen, returns { kind, url, path }
 //	GET  /api/output/   — serves files from the ai_outputs/ directory
+//
+// Model list + per-model UI config comes from models.yaml (with built-in
+// defaults if no file is found). See models.go for the file format and
+// resolution order.
 //
 // API key: loaded in this order:
 //
@@ -29,7 +34,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -66,7 +70,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, "note: using OPENROUTER_API_KEY from a .env file above the repo.")
 	}
 
-	client := openrouter.New(openrouter.WithSecurity(apiKey))
+	client := openrouter.New(
+		openrouter.WithSecurity(apiKey),
+		// Wrap the default HTTP client so every request to OpenRouter
+		// gets a one-line stderr log of (status, duration). This is
+		// what makes 504s diagnosable: a 504 in 30s is an upstream
+		// failure, a 504 after our 10-minute timeout is our own
+		// deadline firing. The status code alone can't tell those apart.
+		// The label "openrouter" is a fallback for any non-generation
+		// call (e.g. the pre-warm model list fetch); per-endpoint
+		// labels aren't worth the plumbing because the path makes
+		// it clear which call is which.
+		openrouter.WithClient(&timingClient{
+			inner: http.DefaultClient,
+			label: "openrouter",
+		}),
+	)
 
 	// Resolve the output directory. Priority:
 	//   1. $AI_OUTPUTS_DIR (absolute or relative to CWD)
@@ -77,9 +96,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Pre-warm model list (best-effort). If it fails, the UI still works and
-	// will show a "no models available" message.
-	models := loadModels(context.Background(), client)
+	// Load the model list once at startup. The list comes from
+	// models.yaml (with sensible defaults baked in if no file is
+	// found on disk). Each entry may carry an optional
+	// capabilities block that drives the UI form; if the block
+	// is absent the UI uses its static HTML defaults.
+	//
+	// No network calls are made here — we don't query OpenRouter
+	// for per-model capabilities. The model list IS the contract.
+	models := loadModels()
 
 	mux := http.NewServeMux()
 
@@ -95,22 +120,14 @@ func main() {
 	// {id} is the full OpenRouter model id, e.g.
 	// "x-ai/grok-imagine-image-quality". Note the id itself
 	// contains a "/" (author/slug), so we use the trailing "/" on
-	// the route pattern but accept any non-empty remainder. We
-	// split it server-side into author/slug for the SDK call.
-	// Returns the SDK-derived SupportedParameters + modality list,
-	// plus any built-in quirks for the model. Used by the UI to
-	// (a) hide form fields the model doesn't accept at all, and
-	// (b) show "Note: this model only accepts resolution 1K or 2K"
-	// hints. Cached in memory for 1 hour per model id.
+	// the route pattern but accept any non-empty remainder.
+	// Returns the model's capabilities block (or JSON null if the
+	// model has no block), or 404 if the model isn't in models.yaml.
 	mux.HandleFunc("GET /api/models/", func(w http.ResponseWriter, r *http.Request) {
-		// The id may contain "/" (author/slug), so we can't reject
-		// paths with internal slashes — we just need a non-empty
-		// remainder. The capabilities handler will URL-decode the
-		// path again; we just need to dispatch to it.
-		handleModelCapabilities(w, r, client)
+		handleModelCaps(w, r, models)
 	})
 	mux.HandleFunc("POST /api/generate", func(w http.ResponseWriter, r *http.Request) {
-		handleGenerate(w, r, client, outputDir)
+		handleGenerate(w, r, client, outputDir, models)
 	})
 
 	// Serve generated outputs. This is how the browser shows the <img>/<video>

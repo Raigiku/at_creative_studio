@@ -30,6 +30,7 @@ export const FORM_FIELD_KIND = {
   output_compression:  { kind: 'range' },
   duration:            { kind: 'enum', helpTemplate: '(seconds, {{min}}–{{max}})' },
   seed:                { kind: 'range' },
+  size:                { kind: 'enum' },
   frame_first:         { kind: 'none' },
   frame_last:          { kind: 'none' },
   generate_audio:      { kind: 'none' },
