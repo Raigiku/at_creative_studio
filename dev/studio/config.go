@@ -5,13 +5,6 @@ import (
 	"time"
 )
 
-// Credential-store identifiers. We use these names everywhere (the server,
-// the CLI subcommands, the helper scripts) so the user can grep for them.
-const (
-	keyringService = "creative-studio"
-	keyringUser    = "openrouter-api-key"
-)
-
 //go:embed static
 var staticFS embed.FS
 
@@ -51,5 +44,5 @@ type modelEntry struct {
 // "where did your key come from?" hint at startup.
 const (
 	keySourceEnv     = "env"
-	keySourceKeyring = "keyring"
+	keySourceEnvFile = "envfile"
 )

@@ -1,5 +1,5 @@
 ﻿// Creative Studio frontend
-// Vanilla JS â€” no framework, no build step.
+// Vanilla JS — no framework, no build step.
 
 // Full aspect-ratio enums from the OpenRouter SDK.
 const ASPECT_RATIOS = {
@@ -73,16 +73,16 @@ function refreshRefHint() {
   const overCap = count > MAX_REFS
 
   if (count === 0) {
-    refHelp.textContent = `(optional â€” up to ${MAX_REFS}, turns it into ${modeLabel})`
+    refHelp.textContent = `(optional — up to ${MAX_REFS}, turns it into ${modeLabel})`
   } else {
-    const suffix = overCap ? 'âš ï¸ over cap' : `will run as ${modeLabel} âœ¨`
-    refHelp.textContent = `(${count}/${MAX_REFS} selected â€” ${suffix})`
+    const suffix = overCap ? '⚠️ over cap' : `will run as ${modeLabel} ✨`
+    refHelp.textContent = `(${count}/${MAX_REFS} selected — ${suffix})`
   }
   refHelp.style.color = overCap ? 'var(--red)' : ''
   button.disabled = overCap
   if (overCap) {
-    setStatus('error', `âŒ Too many reference images: ${count} (max ${MAX_REFS}). Remove some and try again.`)
-  } else if (status.classList.contains('status--error') && status.textContent.startsWith('âŒ Too many')) {
+    setStatus('error', `❌ Too many reference images: ${count} (max ${MAX_REFS}). Remove some and try again.`)
+  } else if (status.classList.contains('status--error') && status.textContent.startsWith('❌ Too many')) {
     setStatus('idle', 'Ready')
   }
 }
@@ -95,7 +95,7 @@ function refreshModelOptions() {
   select.innerHTML = ''
   if (list.length === 0) {
     const opt = document.createElement('option')
-    opt.textContent = '(no models available â€” check API key) ðŸ”‘'
+    opt.textContent = '(no models available — check API key) 🔑'
     select.appendChild(opt)
     return
   }
@@ -272,19 +272,27 @@ function renderRefPreview() {
     const thumb = document.createElement('div')
     thumb.className = 'ref-thumb'
 
+    // Image wrapper — contains the <img> plus the absolutely-positioned
+    // overlays (idx pill, role badge, remove button). The name strip
+    // lives as a sibling below this wrapper so it has its own row and
+    // can show the full filename (wrapping if needed, selectable for
+    // copy-to-clipboard).
+    const imgWrap = document.createElement('div')
+    imgWrap.className = 'ref-img'
+
     const img = document.createElement('img')
     img.src = url
     img.alt = file.name || `Reference ${i + 1}`
     img.loading = 'lazy'
-    thumb.appendChild(img)
+    imgWrap.appendChild(img)
 
     // Index pill (top-left) shows position in the list.
     const idx = document.createElement('span')
     idx.className = 'idx'
     idx.textContent = `#${i + 1}`
-    thumb.appendChild(idx)
+    imgWrap.appendChild(idx)
 
-    // Role badge (bottom-left) â€” only meaningful for video (i2v), where the
+    // Role badge (bottom-left) — only meaningful for video (i2v), where the
     // SDK distinguishes first_frame vs last_frame. For image refs we skip
     // the badge entirely; the file name is enough.
     if (isVideo) {
@@ -295,28 +303,35 @@ function renderRefPreview() {
         const badge = document.createElement('span')
         badge.className = 'badge'
         badge.textContent = label
-        thumb.appendChild(badge)
+        imgWrap.appendChild(badge)
       }
     }
 
-    // File name (bottom) â€” always shown, ellipsised if too long.
+    // Remove button (top-right over the image) — only visible on hover.
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'remove'
+    remove.setAttribute('aria-label', `Remove ${file.name || 'reference ' + (i + 1)}`)
+    remove.textContent = '\u2715'
+    remove.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      removeRefAt(i)
+    })
+    imgWrap.appendChild(remove)
+
+    // Image on top, filename strip below — append the image wrapper
+    // first, then the name, so the flex column renders in the right
+    // order (image → name).
+    thumb.appendChild(imgWrap)
+
+    // File name — always shown, full text (no ellipsis), wraps to
+    // multiple lines if needed, and is selectable so the user can copy
+    // it to the clipboard.
     const name = document.createElement('span')
     name.className = 'name'
     name.title = file.name || '' // full name on hover
     name.textContent = file.name || `Reference ${i + 1}`
     thumb.appendChild(name)
-
-    // Remove button (top-right) â€” only visible on hover.
-    const remove = document.createElement('button')
-    remove.type = 'button'
-    remove.className = 'remove'
-    remove.setAttribute('aria-label', `Remove ${file.name || 'reference ' + (i + 1)}`)
-    remove.textContent = 'âœ•'
-    remove.addEventListener('click', (ev) => {
-      ev.preventDefault()
-      removeRefAt(i)
-    })
-    thumb.appendChild(remove)
 
     refPreview.appendChild(thumb)
   }
@@ -349,6 +364,69 @@ refInput.addEventListener('change', () => {
   renderRefPreview()
 })
 
+// ---- first/last frame anchor previews (video only) ----
+//
+// Each frame input has a sibling `.frame-preview` div that we populate
+// with an image + a selectable filename. Object URLs are tracked so we
+// can revoke them when the file changes (no leaks).
+const frameFirstInput  = document.getElementById('frame_first')
+const frameLastInput   = document.getElementById('frame_last')
+const frameFirstPrev   = document.getElementById('frame_first_preview')
+const frameLastPrev    = document.getElementById('frame_last_preview')
+const frameObjectURLs  = { first: null, last: null }
+
+function renderFramePreview(inputEl, previewEl, slot /* 'first' | 'last' */) {
+  // Revoke any previous object URL for this slot.
+  if (frameObjectURLs[slot]) {
+    URL.revokeObjectURL(frameObjectURLs[slot])
+    frameObjectURLs[slot] = null
+  }
+  previewEl.innerHTML = ''
+  const file = inputEl.files && inputEl.files[0]
+  if (!file) {
+    previewEl.hidden = true
+    return
+  }
+  previewEl.hidden = false
+
+  const url = URL.createObjectURL(file)
+  frameObjectURLs[slot] = url
+
+  const img = document.createElement('img')
+  img.src = url
+  img.alt = file.name || `Frame ${slot}`
+  previewEl.appendChild(img)
+
+  // Bottom filename strip — full name, selectable so the user can
+  // copy it to the clipboard. We let it wrap to multiple lines and
+  // use a monospace font so the layout is predictable.
+  const name = document.createElement('span')
+  name.className = 'name'
+  name.textContent = file.name || ''
+  name.title = file.name || ''
+  previewEl.appendChild(name)
+
+  // Remove button — clears the file input and re-renders.
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.className = 'remove'
+  remove.setAttribute('aria-label', `Remove ${file.name || 'frame'}`)
+  remove.textContent = '×'
+  remove.addEventListener('click', (ev) => {
+    ev.preventDefault()
+    inputEl.value = '' // clear the file input
+    renderFramePreview(inputEl, previewEl, slot)
+  })
+  previewEl.appendChild(remove)
+}
+
+if (frameFirstInput && frameFirstPrev) {
+  frameFirstInput.addEventListener('change', () => renderFramePreview(frameFirstInput, frameFirstPrev, 'first'))
+}
+if (frameLastInput && frameLastPrev) {
+  frameLastInput.addEventListener('change', () => renderFramePreview(frameLastInput, frameLastPrev, 'last'))
+}
+
 // On load: fetch the model list
 ;(async () => {
   try {
@@ -366,16 +444,16 @@ refInput.addEventListener('change', () => {
 // Map server `code` values to a short emoji prefix. Keep this in sync with
 // the errCode* constants in main.go.
 const ERROR_ICON = {
-  auth: 'ðŸ”‘',
-  quota: 'ðŸ’¸',
-  rate_limit: 'â³',
-  unsupported_fields: 'ðŸš«',
-  bad_request: 'âš ï¸',
-  moderation: 'ðŸ›‘',
-  upstream: 'â˜ï¸',
-  network: 'ðŸŒ',
-  video_failed: 'ðŸŽ¬',
-  internal: 'âŒ',
+  auth: '🔑',
+  quota: '💸',
+  rate_limit: '⏳',
+  unsupported_fields: '🚫',
+  bad_request: '⚠️',
+  moderation: '🛑',
+  upstream: '☁️',
+  network: '🌐',
+  video_failed: '🎬',
+  internal: '❌',
 }
 
 // Remember the most recent failed request so the "Retry" button can
@@ -386,7 +464,7 @@ let lastFailedFields = null   // unsupportedFields from the last error, if any
 // Show an error in the status bar. `opts.retryable` and
 // `opts.unsupportedFields` add a button.
 function showGenError(body) {
-  const icon = ERROR_ICON[body.code] || 'âŒ'
+  const icon = ERROR_ICON[body.code] || '❌'
   const retryable = !!body.retryable
   const fields = Array.isArray(body.unsupportedFields) ? body.unsupportedFields : []
 
@@ -405,7 +483,7 @@ function showGenError(body) {
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'retry-btn'
-    btn.textContent = fields.length > 0 ? 'â†» Retry without these fields' : 'â†» Retry'
+    btn.textContent = fields.length > 0 ? '↻ Retry without these fields' : '↻ Retry'
     btn.style.cssText = 'margin-left:10px;font:inherit;font-size:12px;padding:3px 10px;border:0;border-radius:6px;background:var(--surface-3);color:var(--text);cursor:pointer;'
     btn.addEventListener('click', () => {
       // Two flavors of retry:
@@ -439,8 +517,8 @@ function disableFields(names) {
     // Special: frame_first / frame_last are file inputs with the matching name.
     // Special: the aspect_ratio dropdown also writes to a hidden field with
     // the same name; disabling the dropdown disables the user-facing control
-    // but the hidden field still has its value â€” that's fine, FormData
-    // includes hidden disabled inputs? It does NOT â€” disabled inputs are
+    // but the hidden field still has its value — that's fine, FormData
+    // includes hidden disabled inputs? It does NOT — disabled inputs are
     // excluded from form submission, same as a select. So we need to clear
     // the hidden aspect_ratio field if the server says aspect_ratio is
     // unsupported.
@@ -528,13 +606,13 @@ async function submitGenerate(opts = {}) {
   // Clear any previous retry button before showing the new status.
   const oldBtn = status.querySelector('.retry-btn')
   if (oldBtn) oldBtn.remove()
-  setStatus('generating', isRetry ? 'Retrying... ðŸ”' : 'Submitting to OpenRouter... ðŸš€')
+  setStatus('generating', isRetry ? 'Retrying... 🔁' : 'Submitting to OpenRouter... 🚀')
 
   let data
   if (isRetry && resendSnapshot && lastFailedRequest) {
     // We disabled the offending fields in the form, but the FormData
     // snapshot was built BEFORE that disable. Re-build a fresh FormData
-    // from the form so the disabled fields are excluded â€” the user's
+    // from the form so the disabled fields are excluded — the user's
     // other edits since the original failure are also picked up here.
     data = new FormData(form)
   } else if (isRetry) {
@@ -553,20 +631,20 @@ async function submitGenerate(opts = {}) {
 
   try {
     const res = await fetch('/api/generate', { method: 'POST', body: data })
-    // Parse body as JSON regardless of status â€” the server always returns
+    // Parse body as JSON regardless of status — the server always returns
     // our genError shape on failure.
     const body = await res.json().catch(() => ({}))
     if (!res.ok) {
       lastFailedFields = Array.isArray(body.unsupportedFields) ? body.unsupportedFields : null
       throw body  // pass the whole body to the catch block
     }
-    // Success â€” clear the failure memo so the form is fully re-serialized
+    // Success — clear the failure memo so the form is fully re-serialized
     // on the next submit.
     lastFailedRequest = null
     lastFailedFields = null
 
     if (body.kind === 'image') {
-      setStatus('done', `âœ… Saved: ${body.path}`)
+      setStatus('done', `Saved: ${body.path}`)
       const img = document.createElement('img')
       img.src = body.url
       img.alt = 'Generated image'

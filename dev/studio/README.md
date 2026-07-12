@@ -56,32 +56,42 @@ Entries with an empty `id` are skipped with a warning at startup.
 ## How to run
 
 1. Make sure Go 1.25+ is installed: <https://go.dev/dl/>
-2. Store your OpenRouter API key once. The recommended way is the OS
-   credential manager — the key is encrypted by the OS and never written
-   to a file:
+2. Store your OpenRouter API key once. The recommended way is a plain
+   dotenv file in the directory **above** the repo — it lives outside
+   the project tree, can be shared with sibling repos, and never gets
+   accidentally committed:
 
    ```bat
-   scripts\set-key.bat
+   scripts\env-file.bat
    ```
    ```bash
-   ./scripts/set-key.sh
+   ./scripts/env-file.sh
    ```
 
-   You'll be prompted for the key (input is hidden). It gets saved under
-   `service=creative-studio`, `user=openrouter-api-key` in the OS credential
-   manager (Windows Credential Manager, macOS Keychain, or Linux Secret
-   Service). The script also accepts the key as an argument:
+   You'll be prompted for the key (input is hidden). It gets written to
+   `<parent-of-repo>\.ai-creative-studio.env`. For the bundled repo
+   that is `c:\custom\projects\.ai-creative-studio.env` (Windows) or
+   `~/path/to/parent/.ai-creative-studio.env` (macOS / Linux). The
+   script also accepts the key as an argument:
 
    ```bat
-   scripts\set-key.bat sk-or-v1-xxxxxxxxxxxxxxxx
+   scripts\env-file.bat sk-or-v1-xxxxxxxxxxxxxxxx
    ```
    ```bash
-   ./scripts/set-key.sh sk-or-v1-xxxxxxxxxxxxxxxx
+   ./scripts/env-file.sh sk-or-v1-xxxxxxxxxxxxxxxx
    ```
+
+   The file looks like:
+
+   ```dotenv
+   OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxx
+   ```
+
+   You can also edit the file by hand in any text editor.
 
    If you'd rather use an environment variable (CI, containers, one-off
    runs), set `OPENROUTER_API_KEY` instead. The env var always wins when
-   set, even if a key is also in the credential manager.
+   set, even if a key is also in the .env file.
 
 3. Launch the server:
 
@@ -97,28 +107,19 @@ the terminal window or press `Ctrl+C` in it.
 
 ## Managing the stored key
 
-The credential-management scripts in `scripts/` use **native OS tools** —
-no extra Go binary to install:
-
-| Command (Windows)              | What it does                                                | Native tool              |
-| ------------------------------ | ----------------------------------------------------------- | ------------------------ |
-| `scripts\set-key.bat [key]`    | Store / replace the API key in the OS credential manager    | `cmdkey`                 |
-| `scripts\clear-key.bat`        | Remove the stored key                                       | `cmdkey`                 |
-| `scripts\where-is-the-key.bat` | Show which source the server will use (env or credential)   | `cmdkey` (pure stdlib)   |
-
-The matching `.sh` scripts work on macOS (using `security`) and Linux
-(using `secret-tool` — install `libsecret-tools` / `libsecret` if missing).
+| Command                       | What it does                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `scripts\env-file.bat [key]`  | Create / update `<parent-of-repo>\.ai-creative-studio.env` with the API key (input hidden)  |
+| `./scripts/env-file.sh [key]` | Same, on macOS / Linux                                                                      |
 
 The `studio.exe` server itself has **no** credential subcommands — it
-just reads the key on startup. This keeps the server binary small and
-its job focused.
+just reads the env var or .env file on startup. This keeps the server
+binary small and its job focused.
 
-> **The scripts never print the key to stdout.** If you need to see the
-> stored value, use the OS GUI: **Keychain Access** on macOS (under the
-> `creative-studio` item), or **Control Panel → Credential Manager →
-> Windows Credentials** on Windows. This is by design — a script that
-> dumps the secret to the terminal would defeat the point of storing it
-> in the OS vault.
+> **Security note:** the `.ai-creative-studio.env` file is plain text.
+> The filename starts with a dot so it's already covered by the
+> repo's `.gitignore` (`*.env*`). Keep it that way — do not commit
+> your key.
 
 ## File layout
 
@@ -129,11 +130,8 @@ dev/studio/
 ├── static/
 │   ├── index.html          ← the form
 │   └── app.js              ← the frontend (vanilla JS)
-├── scripts/                ← one-shot credential-management scripts
-│   │                         (use native OS tools: cmdkey / security / secret-tool)
-│   ├── set-key.bat / .sh
-│   ├── clear-key.bat / .sh
-│   └── where-is-the-key.bat / .sh
+├── scripts/                ← one-shot helper scripts
+│   └── env-file.bat / .sh
 ├── go.mod                  ← uses the local SDK via a replace directive
 ├── start-studio.bat / .sh  ← double-click / run to build & start
 └── README.md               ← this file
@@ -141,5 +139,3 @@ dev/studio/
 
 The OpenRouter Go SDK is referenced from `../lib_references/go-sdk-v0_5_16/`
 (via a `replace` directive in `go.mod`) so you don't need internet to build.
-The `zalando/go-keyring` library provides the cross-platform OS credential
-manager wrapper.

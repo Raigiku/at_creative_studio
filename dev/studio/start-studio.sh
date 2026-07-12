@@ -2,9 +2,13 @@
 # Creative Studio launcher for macOS (and Linux, since the .sh scripts in
 # scripts/ support both). Windows users have start-studio.bat.
 #
-# The API key is loaded from the OS credential manager (macOS Keychain /
-# Linux Secret Service). On first run, run scripts/set-key.sh to store it.
-# You can also set OPENROUTER_API_KEY in your environment to override.
+# The API key is loaded in this order:
+#   1. $OPENROUTER_API_KEY env var (always wins if set)
+#   2. .ai-creative-studio.env file ONE DIRECTORY ABOVE the repo
+#
+# Example: if the repo is at ~/code/ai_creative_studio, the .env file
+# should live at ~/code/.ai-creative-studio.env with the line:
+#     OPENROUTER_API_KEY=sk-or-v1-...
 
 set -euo pipefail
 
@@ -28,23 +32,33 @@ if [[ ! -x ./studio ]]; then
 fi
 
 # --- 2. Pre-flight check: do we have a key somewhere? ---
-# Probe the same way the Windows launcher does: run where-is-the-key.sh
-# and bail out early if it reports no key. This avoids starting the
-# server only to die with a "no key" error after the browser tab opens.
+# Fast path: env var is set. The server will use it directly.
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-    if ./scripts/where-is-the-key.sh | grep -q "No key found"; then
+    # Slow path: walk up from the script's directory looking for the
+    # .env file, mirroring the server's logic so the user gets a clear
+    # hint BEFORE the server even starts.
+    probe_dir="$(pwd)"
+    found=""
+    while [[ "$probe_dir" != "/" && "$probe_dir" != "." ]]; do
+        if [[ -f "$probe_dir/.ai-creative-studio.env" ]]; then
+            found="$probe_dir/.ai-creative-studio.env"
+            break
+        fi
+        probe_dir="$(dirname "$probe_dir")"
+    done
+    if [[ -z "$found" ]]; then
         echo
         echo "============================================================"
         echo "  No OpenRouter API key found."
         echo
-        echo "  Run this once to store your key in the OS credential"
-        echo "  manager. You only need to do this once."
+        echo "  Create this file (one directory above the repo):"
+        echo "      $(pwd)/../.ai-creative-studio.env"
         echo
-        echo "      ./scripts/set-key.sh"
+        echo "  With the single line:"
+        echo "      OPENROUTER_API_KEY=sk-or-v1-..."
         echo
-        echo "  Or set the OPENROUTER_API_KEY env var for this session:"
-        echo
-        echo "      export OPENROUTER_API_KEY=sk-or-v1-..."
+        echo "  Or export OPENROUTER_API_KEY in your environment for"
+        echo "  this session."
         echo "============================================================"
         echo
         read -rp "Press Enter to exit..." _

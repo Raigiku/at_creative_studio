@@ -12,11 +12,10 @@
 //	POST /api/generate  — accepts multipart form, dispatches gen, returns { kind, url, path }
 //	GET  /api/output/   — serves files from the ai_outputs/ directory
 //
-// API key: loaded from the OS credential manager (preferred) or the
-// OPENROUTER_API_KEY env var (fallback). Manage it with the platform-
-// native scripts in scripts/ — there is NO credential subcommand in this
-// binary. See scripts\set-key.bat (Windows) or scripts/set-key.sh
-// (macOS/Linux) for details.
+// API key: loaded in this order:
+//
+//  1. $OPENROUTER_API_KEY environment variable (always wins if set)
+//  2. .ai-creative-studio.env in the parent directory of the repo
 //
 // Output dir: AI_OUTPUTS_DIR env var, or "<projectRoot>/ai_outputs" by default.
 //
@@ -35,14 +34,12 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 )
 
 func main() {
-	// The server has one job: serve. For credential management, see the
-	// scripts in scripts/ (set-key.bat, clear-key.bat, where-is-the-key.bat, etc.).
-
 	port := os.Getenv("STUDIO_PORT")
 	if port == "" {
 		port = defaultPort
@@ -52,18 +49,21 @@ func main() {
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: No OpenRouter API key found.")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  Option A — OS credential manager (recommended):")
-		fmt.Fprintln(os.Stderr, "    studio.exe set-key")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  Option B — environment variable (one-off / CI):")
+		fmt.Fprintln(os.Stderr, "  Option A — set the environment variable for this session:")
 		fmt.Fprintln(os.Stderr, "    set OPENROUTER_API_KEY=sk-or-v1-...")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Option B — create a .env file one directory above the repo:")
+		fmt.Fprintf(os.Stderr, "    %s\\%s\n", repoParentDir(), envFileName)
+		fmt.Fprintln(os.Stderr, "    with the line:")
+		fmt.Fprintln(os.Stderr, "    OPENROUTER_API_KEY=sk-or-v1-...")
 		os.Exit(1)
 	}
 
-	if keySource == keySourceEnv {
-		fmt.Fprintln(os.Stderr, "note: using OPENROUTER_API_KEY env var; run `studio.exe set-key` to store it in the OS credential manager.")
-	} else {
-		fmt.Fprintln(os.Stderr, "note: using API key from OS credential manager.")
+	switch keySource {
+	case keySourceEnv:
+		fmt.Fprintln(os.Stderr, "note: using OPENROUTER_API_KEY from the process environment.")
+	case keySourceEnvFile:
+		fmt.Fprintln(os.Stderr, "note: using OPENROUTER_API_KEY from a .env file above the repo.")
 	}
 
 	client := openrouter.New(openrouter.WithSecurity(apiKey))
@@ -106,5 +106,33 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Fprintln(os.Stderr, "server error:", err)
 		os.Exit(1)
+	}
+}
+
+// repoParentDir returns the absolute path of the directory that should
+// contain the .env file (one level above the repo). Used only in the
+// "no key found" error message so the user knows where to put it.
+func repoParentDir() string {
+	anchor, err := os.Executable()
+	if err != nil || anchor == "" {
+		anchor, _ = os.Getwd()
+	} else {
+		anchor = filepath.Dir(anchor)
+	}
+	if anchor == "" {
+		return "<parent-of-repo>"
+	}
+	// Walk up until we find the repo root (a directory that contains
+	// "go.mod"). Return its parent.
+	dir := anchor
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return filepath.Dir(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return filepath.Dir(anchor)
+		}
+		dir = parent
 	}
 }
