@@ -568,6 +568,44 @@
     display: block;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
   }
+  /* Action bar shown under a generated preview: explicit Download / Open
+     buttons plus the on-disk filename as a hint. The `download` attribute
+     on the anchor is what makes the browser save with the original name
+     instead of opening the file in-place. */
+  .download-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .download-btn {
+    display: inline-block;
+    padding: 7px 14px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s ease;
+  }
+  .download-btn:hover { background: var(--accent-hover); }
+  .download-btn--ghost {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .download-btn--ghost:hover { background: var(--surface-3); }
+  .download-hint {
+    font: 12px/1.4 ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    color: var(--label-secondary);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
 
   /* ---------- Help footer ---------- */
   .help-footer {

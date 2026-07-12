@@ -1,5 +1,5 @@
-// Creative Studio frontend
-// Vanilla JS — no framework, no build step.
+﻿// Creative Studio frontend
+// Vanilla JS â€” no framework, no build step.
 
 // Full aspect-ratio enums from the OpenRouter SDK.
 const ASPECT_RATIOS = {
@@ -67,16 +67,16 @@ function refreshRefHint() {
   const overCap = count > MAX_REFS
 
   if (count === 0) {
-    refHelp.textContent = `(optional — up to ${MAX_REFS}, turns it into ${modeLabel})`
+    refHelp.textContent = `(optional â€” up to ${MAX_REFS}, turns it into ${modeLabel})`
   } else {
-    const suffix = overCap ? '⚠️ over cap' : `will run as ${modeLabel} ✨`
-    refHelp.textContent = `(${count}/${MAX_REFS} selected — ${suffix})`
+    const suffix = overCap ? 'âš ï¸ over cap' : `will run as ${modeLabel} âœ¨`
+    refHelp.textContent = `(${count}/${MAX_REFS} selected â€” ${suffix})`
   }
   refHelp.style.color = overCap ? 'var(--red)' : ''
   button.disabled = overCap
   if (overCap) {
-    setStatus('error', `❌ Too many reference images: ${count} (max ${MAX_REFS}). Remove some and try again.`)
-  } else if (status.classList.contains('status--error') && status.textContent.startsWith('❌ Too many')) {
+    setStatus('error', `âŒ Too many reference images: ${count} (max ${MAX_REFS}). Remove some and try again.`)
+  } else if (status.classList.contains('status--error') && status.textContent.startsWith('âŒ Too many')) {
     setStatus('idle', 'Ready')
   }
 }
@@ -89,7 +89,7 @@ function refreshModelOptions() {
   select.innerHTML = ''
   if (list.length === 0) {
     const opt = document.createElement('option')
-    opt.textContent = '(no models available — check API key) 🔑'
+    opt.textContent = '(no models available â€” check API key) ðŸ”‘'
     select.appendChild(opt)
     return
   }
@@ -223,7 +223,7 @@ function renderRefPreview() {
     idx.textContent = `#${i + 1}`
     thumb.appendChild(idx)
 
-    // Role badge (bottom-left) — only meaningful for video (i2v), where the
+    // Role badge (bottom-left) â€” only meaningful for video (i2v), where the
     // SDK distinguishes first_frame vs last_frame. For image refs we skip
     // the badge entirely; the file name is enough.
     if (isVideo) {
@@ -238,19 +238,19 @@ function renderRefPreview() {
       }
     }
 
-    // File name (bottom) — always shown, ellipsised if too long.
+    // File name (bottom) â€” always shown, ellipsised if too long.
     const name = document.createElement('span')
     name.className = 'name'
     name.title = file.name || '' // full name on hover
     name.textContent = file.name || `Reference ${i + 1}`
     thumb.appendChild(name)
 
-    // Remove button (top-right) — only visible on hover.
+    // Remove button (top-right) â€” only visible on hover.
     const remove = document.createElement('button')
     remove.type = 'button'
     remove.className = 'remove'
     remove.setAttribute('aria-label', `Remove ${file.name || 'reference ' + (i + 1)}`)
-    remove.textContent = '✕'
+    remove.textContent = 'âœ•'
     remove.addEventListener('click', (ev) => {
       ev.preventDefault()
       removeRefAt(i)
@@ -301,26 +301,211 @@ refInput.addEventListener('change', () => {
 })()
 
 // ---- submit ----
-form.addEventListener('submit', async (e) => {
-  e.preventDefault()
+
+// Map server `code` values to a short emoji prefix. Keep this in sync with
+// the errCode* constants in main.go.
+const ERROR_ICON = {
+  auth: 'ðŸ”‘',
+  quota: 'ðŸ’¸',
+  rate_limit: 'â³',
+  unsupported_fields: 'ðŸš«',
+  bad_request: 'âš ï¸',
+  moderation: 'ðŸ›‘',
+  upstream: 'â˜ï¸',
+  network: 'ðŸŒ',
+  video_failed: 'ðŸŽ¬',
+  internal: 'âŒ',
+}
+
+// Remember the most recent failed request so the "Retry" button can
+// resubmit it without the user re-filling the form. Cleared on success.
+let lastFailedRequest = null
+let lastFailedFields = null   // unsupportedFields from the last error, if any
+
+// Show an error in the status bar. `opts.retryable` and
+// `opts.unsupportedFields` add a button.
+function showGenError(body) {
+  const icon = ERROR_ICON[body.code] || 'âŒ'
+  const retryable = !!body.retryable
+  const fields = Array.isArray(body.unsupportedFields) ? body.unsupportedFields : []
+
+  // Build the message. We append a short "Retry" hint when the user can act.
+  let msg = `${icon} ${body.error || 'Unknown error'}`
+  if (fields.length > 0) {
+    msg += `\n   Disabling: ${fields.join(', ')}`
+  }
+  setStatus('error', msg)
+
+  // Append a Retry button (without nuking the message). We rebuild the
+  // status node's children to keep the text node and the button side by side.
+  if (retryable) {
+    const existing = status.querySelector('.retry-btn')
+    if (existing) existing.remove()
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'retry-btn'
+    btn.textContent = fields.length > 0 ? 'â†» Retry without these fields' : 'â†» Retry'
+    btn.style.cssText = 'margin-left:10px;font:inherit;font-size:12px;padding:3px 10px;border:0;border-radius:6px;background:var(--surface-3);color:var(--text);cursor:pointer;'
+    btn.addEventListener('click', () => {
+      // Two flavors of retry:
+      //  - The model rejected some fields: we want to send the SAME body
+      //    minus those fields. Snapshot + disable + resubmit.
+      //  - The provider was down / rate-limited: the user may have edited
+      //    the form in the meantime, so just resubmit whatever the form
+      //    has now.
+      if (fields.length > 0) {
+        disableFields(fields)
+        submitGenerate({ isRetry: true, resendSnapshot: true })
+      } else {
+        submitGenerate({ isRetry: true, resendSnapshot: false })
+      }
+    })
+    status.appendChild(btn)
+  }
+}
+
+// Disable the named form fields (and their inner inputs) so the next
+// FormData build excludes them. Used when the server tells us the model
+// rejected some params.
+function disableFields(names) {
+  for (const name of names) {
+    // Match by `name=` (covers all <input>, <select>, <textarea> with
+    // that attribute) and also the dedicated id-based controls.
+    for (const el of form.querySelectorAll(`[name="${CSS.escape(name)}"]`)) {
+      el.disabled = true
+    }
+    // Special: the reference image file input has name="ref", handled above.
+    // Special: frame_first / frame_last are file inputs with the matching name.
+    // Special: the aspect_ratio dropdown also writes to a hidden field with
+    // the same name; disabling the dropdown disables the user-facing control
+    // but the hidden field still has its value â€” that's fine, FormData
+    // includes hidden disabled inputs? It does NOT â€” disabled inputs are
+    // excluded from form submission, same as a select. So we need to clear
+    // the hidden aspect_ratio field if the server says aspect_ratio is
+    // unsupported.
+    if (name === 'aspect_ratio' && aspectHidden) aspectHidden.value = ''
+    if (name === 'generate_audio') {
+      const cb = form.querySelector('input[name="generate_audio"]')
+      if (cb) cb.checked = false
+    }
+    if (name === 'n') {
+      const n = form.querySelector('input[name="n"]')
+      if (n) n.value = '1'
+    }
+    if (name === 'seed') {
+      const s = form.querySelector('input[name="seed"]')
+      if (s) s.value = ''
+    }
+    if (name === 'output_compression') {
+      const c = form.querySelector('input[name="output_compression"]')
+      if (c) c.value = '100'
+    }
+    if (name === 'duration') {
+      const d = form.querySelector('input[name="duration"]')
+      if (d) d.value = '5'
+    }
+    if (name === 'size') {
+      const sz = form.querySelector('input[name="size"]')
+      if (sz) sz.value = ''
+    }
+  }
+  // Re-run a couple of UI refreshes so the disabled state is visible
+  // (e.g. the reference picker goes muted).
+  refreshKindVisibility()
+  refreshResolutionSelect()
+  refreshRefHint()
+}
+
+// Build a small "Download ⬇ / Open ↗" bar to drop under a generated preview.
+// The `download` attribute on the anchor is what makes the browser save the
+// file with the original name (instead of routing to the in-page video
+// element) when the user clicks Download. "Open in new tab" is for the case
+// where the user wants to grab a different-format copy later.
+function buildDownloadBar(url, path) {
+  const bar = document.createElement('div')
+  bar.className = 'download-bar'
+
+  const a = document.createElement('a')
+  a.className = 'download-btn'
+  a.href = url
+  a.download = path || ''
+  a.textContent = '⬇ Download'
+  bar.appendChild(a)
+
+  const open = document.createElement('a')
+  open.className = 'download-btn download-btn--ghost'
+  open.href = url
+  open.target = '_blank'
+  open.rel = 'noopener'
+  open.textContent = '↗ Open'
+  bar.appendChild(open)
+
+  // Tiny path hint so the user can see the on-disk filename without opening
+  // a terminal. Truncated in CSS for very long paths.
+  const hint = document.createElement('span')
+  hint.className = 'download-hint'
+  hint.title = path || ''
+  hint.textContent = `ai_outputs/${path || ''}`
+  bar.appendChild(hint)
+
+  return bar
+}
+
+// Submit helper. `opts.isRetry` is true when called from the Retry button.
+// `opts.resendSnapshot` is true when we want to re-send the *exact* body
+// that previously failed (after disabling some fields), false when the
+// user has since edited the form and we should re-serialize.
+async function submitGenerate(opts = {}) {
+  const { isRetry = false, resendSnapshot = false } = opts
   preview.innerHTML = ''
   button.disabled = true
-  setStatus('generating', 'Submitting to OpenRouter... 🚀')
+  // Clear any previous retry button before showing the new status.
+  const oldBtn = status.querySelector('.retry-btn')
+  if (oldBtn) oldBtn.remove()
+  setStatus('generating', isRetry ? 'Retrying... ðŸ”' : 'Submitting to OpenRouter... ðŸš€')
 
-  // Build FormData from a fresh form snapshot so disabled fields are excluded.
-  const data = new FormData(form)
+  let data
+  if (isRetry && resendSnapshot && lastFailedRequest) {
+    // We disabled the offending fields in the form, but the FormData
+    // snapshot was built BEFORE that disable. Re-build a fresh FormData
+    // from the form so the disabled fields are excluded â€” the user's
+    // other edits since the original failure are also picked up here.
+    data = new FormData(form)
+  } else if (isRetry) {
+    // Plain retry (no field removal). Reserialize from the form so any
+    // edits the user made are respected.
+    data = new FormData(form)
+  } else {
+    // First attempt: build FormData from a fresh form snapshot so
+    // disabled fields are excluded.
+    data = new FormData(form)
+  }
+  // Always remember the body we're about to send so a future
+  // "Retry without these fields" can re-send it after disabling.
+  lastFailedRequest = data
+  lastFailedFields = null
 
   try {
     const res = await fetch('/api/generate', { method: 'POST', body: data })
+    // Parse body as JSON regardless of status â€” the server always returns
+    // our genError shape on failure.
     const body = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+    if (!res.ok) {
+      lastFailedFields = Array.isArray(body.unsupportedFields) ? body.unsupportedFields : null
+      throw body  // pass the whole body to the catch block
+    }
+    // Success â€” clear the failure memo so the form is fully re-serialized
+    // on the next submit.
+    lastFailedRequest = null
+    lastFailedFields = null
 
     if (body.kind === 'image') {
-      setStatus('done', `✅ Saved: ${body.path}`)
+      setStatus('done', `âœ… Saved: ${body.path}`)
       const img = document.createElement('img')
       img.src = body.url
       img.alt = 'Generated image'
       preview.appendChild(img)
+      preview.appendChild(buildDownloadBar(body.url, body.path))
     } else if (body.kind === 'video') {
       setStatus('done', `✅ Saved: ${body.path}`)
       const video = document.createElement('video')
@@ -328,10 +513,21 @@ form.addEventListener('submit', async (e) => {
       video.controls = true
       video.autoplay = true
       preview.appendChild(video)
+      preview.appendChild(buildDownloadBar(body.url, body.path))
     }
   } catch (err) {
-    setStatus('error', `❌ ${err.message || String(err)}`)
+    // err may be our parsed body object (from `throw body`) or a network
+    // error. Normalize to the genError shape.
+    const body = (err && typeof err === 'object' && (err.error || err.code))
+      ? err
+      : { error: (err && err.message) || String(err), code: 'internal', retryable: false }
+    showGenError(body)
   } finally {
     button.disabled = false
   }
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault()
+  submitGenerate({ isRetry: false, resendSnapshot: false })
 })
