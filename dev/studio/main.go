@@ -91,6 +91,24 @@ func main() {
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, models)
 	})
+	// Per-model capabilities: GET /api/models/{id}
+	// {id} is the full OpenRouter model id, e.g.
+	// "x-ai/grok-imagine-image-quality". Note the id itself
+	// contains a "/" (author/slug), so we use the trailing "/" on
+	// the route pattern but accept any non-empty remainder. We
+	// split it server-side into author/slug for the SDK call.
+	// Returns the SDK-derived SupportedParameters + modality list,
+	// plus any built-in quirks for the model. Used by the UI to
+	// (a) hide form fields the model doesn't accept at all, and
+	// (b) show "Note: this model only accepts resolution 1K or 2K"
+	// hints. Cached in memory for 1 hour per model id.
+	mux.HandleFunc("GET /api/models/", func(w http.ResponseWriter, r *http.Request) {
+		// The id may contain "/" (author/slug), so we can't reject
+		// paths with internal slashes — we just need a non-empty
+		// remainder. The capabilities handler will URL-decode the
+		// path again; we just need to dispatch to it.
+		handleModelCapabilities(w, r, client)
+	})
 	mux.HandleFunc("POST /api/generate", func(w http.ResponseWriter, r *http.Request) {
 		handleGenerate(w, r, client, outputDir)
 	})

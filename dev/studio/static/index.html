@@ -137,6 +137,61 @@
     font-weight: 400;
   }
 
+  /* ---------- "Cap-unsupported" indicator ----------
+     Same look as .is-overridden: dim the field and append a short
+     "— not supported" tag to its label. Used when the currently
+     selected model does not accept this parameter at all (e.g. the
+     Grok Imagine model advertises `aspect_ratio` but not `quality`).
+     The field stays visible — only the value is sent, not the
+     unsupported ones — and is disabled so the next FormData
+     snapshot excludes it. */
+  .cap-unsupported {
+    opacity: 0.45;
+  }
+  .cap-unsupported .section-label::after {
+    content: " — not supported by this model";
+    color: var(--label-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+
+  /* ---------- "Auto-adjusted" indicator ----------
+     Set on a pill or <select> whose value was changed automatically
+     (because the model doesn't accept the user's previous value).
+     We mark the field with a small ⚠ so the user knows something
+     changed under their feet. The label is also shown on hover via
+     the title= attribute set from JS. */
+  .cap-auto-adjusted {
+    box-shadow: inset 0 0 0 1.5px var(--yellow) !important;
+  }
+  .cap-auto-adjusted::after {
+    content: ' ⚠';
+    color: var(--yellow);
+    font-weight: 600;
+  }
+
+  /* ---------- Per-model quirk note ----------
+     Surfaced above the Generate button when the server tells us the
+     current model has a known gotcha (e.g. Grok Imagine's resolution
+     must be 1K or 2K). One bulleted list per quirk. */
+  #cap-hint {
+    margin-top: 14px;
+    padding: 11px 14px;
+    background: var(--yellow-soft);
+    color: var(--yellow);
+    border-radius: var(--r-input);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  #cap-hint[hidden] { display: none; }
+  #cap-hint ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+  }
+  #cap-hint li { margin: 2px 0; }
+  #cap-hint strong { font-weight: 600; }
+
   /* ---------- Segmented control (iOS style) ---------- */
   .segmented {
     display: grid;
@@ -855,7 +910,18 @@
         <!-- Duration: prominent (not in Advanced) -->
         <div class="field">
           <label class="section-label" for="duration">⏱️ Duration <span class="help">(seconds, 1–10)</span></label>
-          <input type="number" class="input" id="duration" name="duration" min="1" max="10" step="1" value="5" />
+          <select id="duration" name="duration" class="input">
+            <option value="1">1s</option>
+            <option value="2">2s</option>
+            <option value="3">3s</option>
+            <option value="4">4s</option>
+            <option value="5" selected>5s</option>
+            <option value="6">6s</option>
+            <option value="7">7s</option>
+            <option value="8">8s</option>
+            <option value="9">9s</option>
+            <option value="10">10s</option>
+          </select>
         </div>
 
         <div class="field">
@@ -879,6 +945,8 @@
         </div>
       </div>
     </details>
+
+    <div id="cap-hint" hidden></div>
 
     <button id="generate-btn" class="generate-btn" type="submit">✨ Generate</button>
   </form>

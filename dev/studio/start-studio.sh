@@ -18,10 +18,51 @@ export STUDIO_PORT="${STUDIO_PORT:-7878}"
 # where the user invoked it from.
 cd "$(dirname "$(readlink -f "$0")")"
 
-# --- 1. Make sure the binary exists (build if needed) ---
-# On macOS the build product is just `studio` (no extension).
-if [[ ! -x ./studio ]]; then
-    echo "Building studio..."
+# --- 1. Make sure the binary exists and is up to date ---
+#
+# The Go binary embeds the static/ directory at compile time via
+# //go:embed. If you edit app.js, index.html, or any other file in
+# static/ without rebuilding, the running server keeps serving the
+# OLD copies from the binary. We now rebuild automatically whenever
+# the binary is older than any of the embedded source files, so the
+# dev loop "edit → restart → see the change" just works.
+#
+# Pass --no-build to skip the rebuild check (e.g. in CI when you've
+# already built in an earlier step).
+SKIP_BUILD=0
+for arg in "$@"; do
+    if [[ "$arg" == "--no-build" ]]; then
+        SKIP_BUILD=1
+    fi
+done
+
+need_build=1
+if [[ -x ./studio ]] && [[ "$SKIP_BUILD" == "0" ]]; then
+    # Find the newest source file (Go or anything under static/) and
+    # compare its mtime to the binary's. If any source is newer,
+    # rebuild. Excludes node_modules and .git to avoid noise.
+    newest_src=$(find . \( -name node_modules -o -name .git \) -prune \
+                    -o -type f \( -name '*.go' -o -path './static/*' \) -print 2>/dev/null \
+                | xargs -I {} stat -c '%Y %n' {} 2>/dev/null \
+                | sort -rn | head -1 | cut -d' ' -f2-)
+    if [[ -n "$newest_src" ]]; then
+        src_mtime=$(stat -c '%Y' "$newest_src")
+        bin_mtime=$(stat -c '%Y' ./studio)
+        if (( src_mtime <= bin_mtime )); then
+            need_build=0
+        fi
+    fi
+elif [[ -x ./studio ]] && [[ "$SKIP_BUILD" == "1" ]]; then
+    need_build=0
+fi
+
+if [[ "$need_build" == "1" ]]; then
+    if [[ -x ./studio ]]; then
+        echo "Source files newer than ./studio — rebuilding..."
+    else
+        # On macOS the build product is just `studio` (no extension).
+        echo "Building studio..."
+    fi
     if ! command -v go >/dev/null 2>&1; then
         echo
         echo "ERROR: Go is not installed. Install Go 1.25 or newer from https://go.dev/dl/"
@@ -29,7 +70,6 @@ if [[ ! -x ./studio ]]; then
         exit 1
     fi
     go build -o studio .
-fi
 
 # --- 2. Pre-flight check: do we have a key somewhere? ---
 # Fast path: env var is set. The server will use it directly.

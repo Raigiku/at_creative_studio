@@ -60,8 +60,15 @@ func handleGenerate(w http.ResponseWriter, r *http.Request, client *openrouter.O
 	// request body can be released before the (potentially long) generation.
 	var refImages []refImage
 	if files := r.MultipartForm.File["ref"]; len(files) > 0 {
-		if len(files) > maxReferenceImages {
-			http.Error(w, fmt.Sprintf("too many reference images: %d (max %d)", len(files), maxReferenceImages), http.StatusBadRequest)
+		// The cap is per-model: e.g. Grok Imagine allows 0–3 reference
+		// images, while the form lets you pick up to 16. The UI
+		// prevents the user from going over the model's cap, but we
+		// validate again server-side as a safety net (the cap is read
+		// from the in-memory capability cache, falling back to
+		// maxReferenceImages if the model is unknown).
+		cap := refImagesMaxForModel(modelID)
+		if len(files) > cap {
+			http.Error(w, fmt.Sprintf("too many reference images: %d (max %d for model %s)", len(files), cap, modelID), http.StatusBadRequest)
 			return
 		}
 		for _, fh := range files {
