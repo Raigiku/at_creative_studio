@@ -4,10 +4,15 @@ A small local web app for generating images and video via OpenRouter.
 
 ## What it does
 
-- Pick a generation type (text→image, image→image, text→video, image→video)
-- Write a prompt (and optionally upload reference images)
-- Pick a model
-- Click **Generate**. The output appears in the browser and is saved into `ai_outputs/`.
+- Pick a kind (image or video)
+- Pick a model from the dropdown
+- Write a prompt and adjust the per-model options (size, aspect, etc.)
+- Optionally attach reference images — the form automatically switches
+  to image-to-image / image-to-video mode
+- Optionally pick a first/last frame anchor for video (separate from
+  references)
+- Click **Generate**. The output appears in the browser and is saved
+  into `ai_outputs/`.
 
 ## Where outputs go
 
@@ -53,6 +58,14 @@ Each entry needs an `id` (the OpenRouter model identifier). `name` is
 optional and defaults to the id. Comments and blank lines are allowed.
 Entries with an empty `id` are skipped with a warning at startup.
 
+## Capabilities
+
+Each model's per-field support (which aspect ratios, sizes, audio
+toggles, frame anchors, etc. are accepted) is fetched from the
+`/api/models/{id}` endpoint and used to dim / disable unsupported
+options in the form. The form's values are clamped to the model's
+advertised ranges whenever the model changes.
+
 ## How to run
 
 1. Make sure Go 1.25+ is installed: <https://go.dev/dl/>
@@ -96,10 +109,12 @@ Entries with an empty `id` are skipped with a warning at startup.
 3. Launch the server:
 
    - **Windows:** double-click `start-studio.bat` (or run `studio.exe`
-     directly). The launcher does a pre-flight check and tells you
-     clearly if no key is available.
+     directly). The launcher always rebuilds the binary (the `static/`
+     directory is embedded at compile time via `//go:embed`, so a fresh
+     build is the only way to pick up frontend edits) and does a
+     pre-flight check for the API key.
    - **macOS / Linux:** run `./start-studio.sh` (or `./studio` directly
-     after building). Same pre-flight check, opens the browser with
+     after building). Same rebuild + pre-flight, opens the browser with
      `open` / `xdg-open`.
 
 A browser window will open to <http://localhost:7878>. To stop the server, close
@@ -125,17 +140,48 @@ binary small and its job focused.
 
 ```
 dev/studio/
-├── main.go                 ← the Go server
+├── main.go                 ← server entry point
+├── handler.go              ← HTTP routes
+├── credentials.go          ← reads OPENROUTER_API_KEY
+├── models.go               ← loads models.yaml
+├── capabilities.go         ← /api/models/{id}
+├── generate_image.go       ← image generation
+├── generate_video.go       ← video generation
+├── storage.go              ← saves outputs to ai_outputs/
+├── params.go               ← request param plumbing
+├── config.go               ← env-driven config (ports, paths, ...)
+├── errors.go               ← shared error types
 ├── models.yaml             ← editable list of models shown in the UI
-├── static/
+├── static/                 ← embedded into the binary at build time
 │   ├── index.html          ← the form
-│   └── app.js              ← the frontend (vanilla JS)
+│   ├── app.js              ← Preact entry point (mounts <App/>)
+│   ├── state.js            ← shared studio state (context)
+│   ├── capabilities.js     ← pure capability helpers
+│   ├── fieldConfig.js      ← static field definitions / limits
+│   ├── submit.js           ← owns the status bar; submit handler
+│   ├── api.js, sort.js, helpers.js, status.js
+│   ├── styles.css
+│   └── components/         ← one file per UI concern
+│       ├── App.js          ← top-level form
+│       ├── Kind.js, Model.js, Aspect.js
+│       ├── ImageOptions.js, VideoOptions.js
+│       ├── Frames.js, References.js
+│       ├── Advanced.js, CapHint.js, Submit.js, Status.js
+│       └── capFields.js    ← shared CapSelect / CapNumberInput / CapCheckbox
 ├── scripts/                ← one-shot helper scripts
 │   └── env-file.bat / .sh
 ├── go.mod                  ← uses the local SDK via a replace directive
 ├── start-studio.bat / .sh  ← double-click / run to build & start
 └── README.md               ← this file
 ```
+
+The frontend is Preact + `htm` loaded via an import map from
+`https://esm.sh` — no JS build step. `static/index.html` defines the
+import map and `<script type="module" src="app.js">` boots Preact into
+`#root`. Each `<script type="module">` in `static/` is a separate
+concern: state, capabilities, per-field components, the submit handler,
+etc. `app.js` is just the entry point — it imports the top-level
+`<App/>` and mounts it.
 
 The OpenRouter Go SDK is referenced from `../lib_references/go-sdk-v0_5_16/`
 (via a `replace` directive in `go.mod`) so you don't need internet to build.
