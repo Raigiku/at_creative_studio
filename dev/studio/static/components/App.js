@@ -22,7 +22,6 @@ import {
 } from '../fieldConfig.js'
 import { setStatus } from '../status.js'
 import { submitGenerate } from '../submit.js'
-import { sortModels } from '../sort.js'
 import { deriveView } from '../capabilities.js'
 import { FIELD_FALLBACKS } from './capFields.js'
 
@@ -60,9 +59,13 @@ export function App() {
     fetchModels()
       .then(raw => {
         if (cancelled) return
+        // Preserve the order the server returned. The server
+        // reads models.yaml in document order, so the dropdown
+        // order matches the order the user sees (and edits) in
+        // the YAML file.
         const models = {
-          image: sortModels(raw.image || []),
-          video: sortModels(raw.video || []),
+          image: raw.image || [],
+          video: raw.video || [],
         }
         const initialID = firstModelID(models, state.kind)
         set({

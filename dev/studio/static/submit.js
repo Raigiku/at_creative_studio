@@ -54,11 +54,8 @@ function showGenError(body) {
   if (!status) return
   const icon = ERROR_ICON[body.code] || '❌'
   const retryable = !!body.retryable
-  const fields = Array.isArray(body.unsupportedFields) ? body.unsupportedFields : []
 
-  let msg = `${icon} ${body.error || 'Unknown error'}`
-  if (fields.length > 0) msg += `\n   Disabling: ${fields.join(', ')}`
-  setStatus('error', msg)
+  setStatus('error', `${icon} ${body.error || 'Unknown error'}`)
 
   if (retryable) {
     const existing = status.querySelector('.retry-btn')
@@ -66,12 +63,9 @@ function showGenError(body) {
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'retry-btn'
-    btn.textContent = fields.length > 0 ? '↻ Retry without these fields' : '↻ Retry'
+    btn.textContent = '↻ Retry'
     btn.style.cssText = 'margin-left:10px;font:inherit;font-size:12px;padding:3px 10px;border:0;border-radius:6px;background:var(--surface-3);color:var(--text);cursor:pointer;'
-    btn.addEventListener('click', () => {
-      if (fields.length > 0) disableFields(fields)
-      submitGenerate({ isRetry: true })
-    })
+    btn.addEventListener('click', () => submitGenerate({ isRetry: true }))
     status.appendChild(btn)
   }
 
@@ -126,48 +120,6 @@ function buildRawResponse(raw) {
   }
   wrap.appendChild(pre)
   return wrap
-}
-
-// disableFields — used by the retry flow when the server tells us
-// the model rejected some params. Disables the named fields in
-// the form so the next FormData snapshot omits them, and resets
-// the named field to a sane default.
-function disableFields(names) {
-  const form = document.getElementById('gen-form')
-  if (!form) return
-  for (const name of names) {
-    for (const el of form.querySelectorAll(`[name="${CSS.escape(name)}"]`)) {
-      el.disabled = true
-    }
-    if (name === 'aspect_ratio') {
-      const ah = form.querySelector('input[name="aspect_ratio"]')
-      if (ah) ah.value = ''
-    }
-    if (name === 'generate_audio') {
-      const cb = form.querySelector('input[name="generate_audio"]')
-      if (cb) cb.checked = false
-    }
-    if (name === 'n') {
-      const n = form.querySelector('input[name="n"]')
-      if (n) n.value = '1'
-    }
-    if (name === 'seed') {
-      const s = form.querySelector('input[name="seed"]')
-      if (s) s.value = ''
-    }
-    if (name === 'output_compression') {
-      const c = form.querySelector('input[name="output_compression"]')
-      if (c) c.value = '100'
-    }
-    if (name === 'duration') {
-      const d = form.querySelector('input[name="duration"]')
-      if (d) d.value = '5'
-    }
-    if (name === 'size') {
-      const sz = form.querySelector('[name="size"]')
-      if (sz) sz.value = ''
-    }
-  }
 }
 
 export async function submitGenerate({ isRetry = false } = {}) {

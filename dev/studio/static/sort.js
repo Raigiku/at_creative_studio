@@ -83,16 +83,3 @@ function stringSort(values) {
     return String(a) < String(b) ? -1 : (String(a) > String(b) ? 1 : 0)
   })
 }
-
-// sortModels — sort model entries by display name (falling back to
-// id) for the model <select>. Pure; never mutates the input array.
-export function sortModels(models) {
-  if (!Array.isArray(models)) return []
-  return models.slice().sort((a, b) => {
-    const an = String(a && (a.name || a.id) || '').toLocaleLowerCase()
-    const bn = String(b && (b.name || b.id) || '').toLocaleLowerCase()
-    if (an < bn) return -1
-    if (an > bn) return 1
-    return 0
-  })
-}

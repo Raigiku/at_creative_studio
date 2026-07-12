@@ -23,23 +23,21 @@ import (
 //	  "error": "...",        // human-readable, single line, safe to show
 //	  "code":  "...",        // machine-readable category (see errorCode values)
 //	  "retryable": false,    // hint to the UI: a "Retry" button makes sense?
-//	  "unsupportedFields": []  // present only when code == "unsupported_fields"
 //	}
 //
 // We also log the *original* error (with request id, body, etc.) to stderr
 // so failures are visible in the launcher terminal even when the UI hides
 // them.
 const (
-	errCodeAuth        = "auth"               // 401, 403 — bad or missing API key
-	errCodeQuota       = "quota"              // 402 — out of credits
-	errCodeRateLimit   = "rate_limit"         // 429 — slow down
-	errCodeUnsupported = "unsupported_fields" // 400 — model rejected one or more params
-	errCodeBadRequest  = "bad_request"        // 400 — anything else (bad prompt, etc.)
-	errCodeModeration  = "moderation"         // 403 with moderation wording
-	errCodeUpstream    = "upstream"           // 5xx, provider overloaded
-	errCodeNetwork     = "network"            // dial errors, DNS, connection reset
-	errCodeVideoFailed = "video_failed"       // async job ended in failed/cancelled/expired
-	errCodeInternal    = "internal"           // anything we couldn't classify
+	errCodeAuth        = "auth"          // 401, 403 — bad or missing API key
+	errCodeQuota       = "quota"         // 402 — out of credits
+	errCodeRateLimit   = "rate_limit"    // 429 — slow down
+	errCodeBadRequest  = "bad_request"   // 400 — anything else (bad prompt, etc.)
+	errCodeModeration  = "moderation"    // 403 with moderation wording
+	errCodeUpstream    = "upstream"      // 5xx, provider overloaded
+	errCodeNetwork     = "network"       // dial errors, DNS, connection reset
+	errCodeVideoFailed = "video_failed"  // async job ended in failed/cancelled/expired
+	errCodeInternal    = "internal"      // anything we couldn't classify
 )
 
 // genError is the JSON envelope every generation failure is
@@ -47,10 +45,9 @@ const (
 // status bar and (if present) pretty-prints `raw` under a
 // collapsible disclosure.
 type genError struct {
-	Message           string          `json:"error"`
-	Code              string          `json:"code"`
-	Retryable         bool            `json:"retryable"`
-	UnsupportedFields []string        `json:"unsupportedFields,omitempty"`
+	Message   string          `json:"error"`
+	Code      string          `json:"code"`
+	Retryable bool            `json:"retryable"`
 	// Raw is the upstream response body for SDK-classified
 	// failures. It's a json.RawMessage so the client can pretty-
 	// print it without re-parsing; "" when there's no upstream
@@ -82,11 +79,10 @@ func writeGenError(w http.ResponseWriter, genType, modelID string, status int, g
 //
 //  1. Typed SDK errors (e.g. *sdkerrors.UnauthorizedResponseError) when
 //     the Go SDK actually returns them — these carry a parsed body with
-//     a useful message.
-//  2. The error message itself for "unsupported_fields": the SDK's
-//     *sdkerrors.BadRequestResponseError wraps a body that usually names
-//     the offending field. We pattern-match a few common phrasings.
-//  3. Generic HTTP status codes as a fallback.
+//     a useful message. We re-marshal the parsed `Error_` into the
+//     genError's `raw` field so the UI can pretty-print the exact
+//     upstream JSON.
+//  2. Generic HTTP status codes as a fallback (via apiErrorByStatus).
 //
 // Special-casses: context.DeadlineExceeded / context.Canceled become
 // "upstream" (the SDK took too long — usually the model's fault).
@@ -165,18 +161,8 @@ func classifySDKError(err error) (int, genError) {
 			Raw:     rawSDKErrorEnvelope(e),
 		}
 	case *sdkerrors.BadRequestResponseError:
-		msg := e.Error_.GetMessage()
-		if fields := extractUnsupportedFields(msg); len(fields) > 0 {
-			return http.StatusBadRequest, genError{
-				Message:           "this model doesn't support some of the settings you picked: " + strings.Join(fields, ", ") + ". Remove them and try again.",
-				Code:              errCodeUnsupported,
-				Retryable:         true,
-				UnsupportedFields: fields,
-				Raw:               rawSDKErrorEnvelope(e),
-			}
-		}
 		return http.StatusBadRequest, genError{
-			Message: friendlyBadRequestMessage(msg),
+			Message: friendlyBadRequestMessage(e.Error_.GetMessage()),
 			Code:    errCodeBadRequest,
 			Raw:     rawSDKErrorEnvelope(e),
 		}
@@ -269,18 +255,8 @@ func apiErrorByStatus(e *sdkerrors.APIError) (int, genError) {
 			Raw:       raw,
 		}
 	case e.StatusCode == 400:
-		body := extractMessage(e.Body)
-		if fields := extractUnsupportedFields(body); len(fields) > 0 {
-			return http.StatusBadRequest, genError{
-				Message:           "this model doesn't support some of the settings you picked: " + strings.Join(fields, ", ") + ". Remove them and try again.",
-				Code:              errCodeUnsupported,
-				Retryable:         true,
-				UnsupportedFields: fields,
-				Raw:               raw,
-			}
-		}
 		return http.StatusBadRequest, genError{
-			Message: friendlyBadRequestMessage(body),
+			Message: friendlyBadRequestMessage(extractMessage(e.Body)),
 			Code:    errCodeBadRequest,
 			Raw:     raw,
 		}
@@ -291,57 +267,6 @@ func apiErrorByStatus(e *sdkerrors.APIError) (int, genError) {
 			Raw:     raw,
 		}
 	}
-}
-
-// extractUnsupportedFields scans a 400 error body for the names of
-// params the model rejected. OpenRouter's messages tend to mention the
-// field verbatim ("unsupported parameter: quality", "size is not
-// supported", "invalid value for aspect_ratio", etc.). We return the
-// canonical studio form names that match the <input name="..."> in the
-// HTML form so the UI can disable the right controls.
-func extractUnsupportedFields(body string) []string {
-	if body == "" {
-		return nil
-	}
-	low := strings.ToLower(body)
-
-	// Map: keyword(s) that suggest this field is the offender → studio form
-	// field name. Order matters: longer / more specific patterns first.
-	candidates := []struct {
-		match []string
-		field string
-	}{
-		{[]string{"input_references", "reference image", "ref image", "i2v"}, "ref"},
-		{[]string{"frame_first", "first frame", "first_frame"}, "frame_first"},
-		{[]string{"frame_last", "last frame", "last_frame"}, "frame_last"},
-		{[]string{"aspect_ratio", "aspect ratio", "ratio"}, "aspect_ratio"},
-		{[]string{"resolution", "size not supported", "1080p", "4k"}, "resolution"},
-		{[]string{"size", "width", "height"}, "size"},
-		{[]string{"duration", "seconds", "second long"}, "duration"},
-		{[]string{"generate_audio", "audio"}, "generate_audio"},
-		{[]string{"background", "transparent"}, "background"},
-		{[]string{"output_format", "output format", "media type"}, "output_format"},
-		{[]string{"quality"}, "quality"},
-		{[]string{"output_compression", "compression"}, "output_compression"},
-		{[]string{"seed"}, "seed"},
-		{[]string{"n", "number of images", "num_images"}, "n"},
-	}
-
-	seen := map[string]bool{}
-	var out []string
-	for _, c := range candidates {
-		if seen[c.field] {
-			continue
-		}
-		for _, m := range c.match {
-			if strings.Contains(low, m) {
-				seen[c.field] = true
-				out = append(out, c.field)
-				break
-			}
-		}
-	}
-	return out
 }
 
 // isModerationMessage returns true if the body looks like a content

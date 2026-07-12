@@ -225,6 +225,15 @@ image:
           type: "range"
           min: 0
           max: 3
+  - id: "cap-1"
+    name: "Cap 1"
+    capabilities:
+      fields:
+        input_references:
+          enabled: true
+          type: "range"
+          min: 0
+          max: 1
   - id: "no-cap"
     name: "No Cap"
 video: []
@@ -238,6 +247,9 @@ video: []
 	}
 	if got := refImagesMaxForModel(lists, "cap-3"); got != 3 {
 		t.Errorf("cap-3: got %d, want 3", got)
+	}
+	if got := refImagesMaxForModel(lists, "cap-1"); got != 1 {
+		t.Errorf("cap-1: got %d, want 1", got)
 	}
 	// No cap block: use the package default.
 	if got := refImagesMaxForModel(lists, "no-cap"); got != maxReferenceImages {
@@ -360,5 +372,51 @@ func TestRawFromAPIErrorBody(t *testing.T) {
 	}
 	if got := rawFromAPIErrorBody("<html>nope</html>"); got != nil {
 		t.Errorf("non-JSON should return nil, got %s", got)
+	}
+}
+
+// TestParseModelsYAML_PreservesOrder pins the dropdown-order
+// contract: the model lists the server sends to the UI must
+// appear in the same order as the entries in models.yaml. The UI
+// dropped its alphabetical sort in favour of YAML order so the
+// user can rearrange models by editing the file.
+func TestParseModelsYAML_PreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.yaml")
+	yaml := `
+image:
+  - id: "zebra"
+    name: "Zebra"
+  - id: "alpha"
+    name: "Alpha"
+  - id: "mike"
+    name: "Mike"
+video:
+  - id: "yankee"
+    name: "Yankee"
+  - id: "bravo"
+    name: "Bravo"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := parseModelsYAML(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantImage := []string{"zebra", "alpha", "mike"}
+	if len(lists.Image) != len(wantImage) {
+		t.Fatalf("Image len = %d, want %d", len(lists.Image), len(wantImage))
+	}
+	for i, w := range wantImage {
+		if lists.Image[i].ID != w {
+			t.Errorf("Image[%d].ID = %q, want %q", i, lists.Image[i].ID, w)
+		}
+	}
+	wantVideo := []string{"yankee", "bravo"}
+	for i, w := range wantVideo {
+		if lists.Video[i].ID != w {
+			t.Errorf("Video[%d].ID = %q, want %q", i, lists.Video[i].ID, w)
+		}
 	}
 }

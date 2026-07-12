@@ -97,14 +97,21 @@ func main() {
 	}
 
 	// Load the model list once at startup. The list comes from
-	// models.yaml (with sensible defaults baked in if no file is
-	// found on disk). Each entry may carry an optional
-	// capabilities block that drives the UI form; if the block
-	// is absent the UI uses its static HTML defaults.
+	// models.yaml — the file is required; the server fails fast
+	// if it's missing or unparseable. Copy models.example.yaml
+	// to models.yaml (or set $STUDIO_MODELS) to get going.
 	//
 	// No network calls are made here — we don't query OpenRouter
 	// for per-model capabilities. The model list IS the contract.
-	models := loadModels()
+	models, err := loadModels()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ERROR:", err)
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  To fix:")
+		fmt.Fprintln(os.Stderr, "    - Copy models.example.yaml to models.yaml and edit it, OR")
+		fmt.Fprintln(os.Stderr, "    - Set STUDIO_MODELS to an existing models.yaml file")
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
 
